@@ -11,4 +11,6 @@ coverage/
 
 # Local planning and handoff materials; never publish.
 /PayTrace_*
+/LOCAL_HACKATHON_REFERENCE.md
+/DEVELOPMENT_STATUS.md
 
