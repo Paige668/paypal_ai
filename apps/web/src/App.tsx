@@ -6,6 +6,7 @@ type Order = {
   paypalCaptureId: string | null;
   paypalOrderStatus: string;
   paypalCaptureStatus: string | null;
+  localStatus: "PENDING_PAYMENT" | "PAID" | "CANCELLED";
   amount: { currencyCode: string; value: string };
   captureObservedAt: string | null;
 };
@@ -102,7 +103,7 @@ export function App() {
 
   return (
     <main>
-      <p className="eyebrow">PayTrace AI · November 1 milestone</p>
+      <p className="eyebrow">PayTrace AI · November 2 milestone</p>
       <h1>Prove the payment before investigating it.</h1>
       <p className="lede">
         Create, approve, and capture one real PayPal Sandbox order. Only allowlisted provider evidence is stored.
@@ -126,6 +127,7 @@ export function App() {
             <dt>Order status</dt><dd>{order.paypalOrderStatus}</dd>
             <dt>Capture ID</dt><dd>{order.paypalCaptureId ?? "Awaiting approval"}</dd>
             <dt>Capture status</dt><dd>{order.paypalCaptureStatus ?? "Not captured"}</dd>
+            <dt>Merchant status</dt><dd>{order.localStatus}</dd>
             <dt>Amount</dt><dd>{order.amount.value} {order.amount.currencyCode}</dd>
             <dt>Observed</dt><dd>{order.captureObservedAt ?? "—"}</dd>
           </dl>
