@@ -1,8 +1,8 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { JsonOrderRepository } from "./order-store.js";
+import { SqliteOrderRepository } from "./order-store.js";
 import type { MerchantOrder } from "./types.js";
 
 const temporaryDirectories: string[] = [];
@@ -11,33 +11,130 @@ afterEach(async () => {
   await Promise.all(temporaryDirectories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
 });
 
-describe("JsonOrderRepository", () => {
-  it("persists an allowlisted order across repository instances", async () => {
+function capturedOrder(localStatus: MerchantOrder["localStatus"] = "PAID"): MerchantOrder {
+  return {
+    merchantOrderId: "ord_test",
+    paypalOrderId: "PAYPAL-1",
+    paypalCaptureId: "CAPTURE-1",
+    paypalOrderStatus: "COMPLETED",
+    paypalCaptureStatus: "COMPLETED",
+    localStatus,
+    amount: { currencyCode: "USD", value: "10.00" },
+    createdAt: "2026-11-01T10:00:00.000Z",
+    updatedAt: "2026-11-01T10:01:00.000Z",
+    captureObservedAt: "2026-11-01T10:01:00.000Z",
+    evidence: [
+      {
+        evidenceId: "ev_capture",
+        source: "PAYPAL_API",
+        providerEventId: null,
+        kind: "CAPTURE_COMPLETED",
+        verificationStatus: "API_RESPONSE",
+        observedAt: "2026-11-01T10:01:00.000Z",
+        providerCreatedAt: null,
+        summary: { captureId: "CAPTURE-1", status: "COMPLETED" }
+      },
+      {
+        evidenceId: "ev_merchant",
+        source: "MERCHANT",
+        providerEventId: null,
+        kind: "MERCHANT_STATUS_UPDATED",
+        verificationStatus: "MERCHANT_RECORDED",
+        observedAt: "2026-11-01T10:01:00.000Z",
+        providerCreatedAt: null,
+        summary: { localStatus }
+      }
+    ]
+  };
+}
+
+describe("SqliteOrderRepository", () => {
+  it("persists an order and timeline across repository instances", async () => {
     const directory = await mkdtemp(join(tmpdir(), "paytrace-orders-"));
     temporaryDirectories.push(directory);
-    const path = join(directory, "orders.json");
-    const order: MerchantOrder = {
-      merchantOrderId: "ord_test",
-      paypalOrderId: "PAYPAL-1",
-      paypalCaptureId: null,
-      paypalOrderStatus: "CREATED",
-      paypalCaptureStatus: null,
-      amount: { currencyCode: "USD", value: "10.00" },
-      createdAt: "2026-11-01T10:00:00.000Z",
-      updatedAt: "2026-11-01T10:00:00.000Z",
-      captureObservedAt: null,
-      evidence: [{
-        evidenceId: "ev_test",
-        source: "PAYPAL_API_CONFIRMED",
-        kind: "ORDER_CREATED",
-        observedAt: "2026-11-01T10:00:00.000Z",
-        summary: { paypalOrderId: "PAYPAL-1", status: "CREATED" }
-      }]
-    };
+    const path = join(directory, "orders.sqlite");
+    const order = capturedOrder();
 
-    await new JsonOrderRepository(path).save(order);
-    const reloaded = await new JsonOrderRepository(path).findByMerchantOrderId("ord_test");
+    const first = new SqliteOrderRepository(path);
+    await first.save(order);
+    first.close();
+
+    const second = new SqliteOrderRepository(path);
+    const reloaded = await second.findByMerchantOrderId("ord_test");
+    const timeline = await second.getTimeline("ord_test");
+    second.close();
+
     expect(reloaded).toEqual(order);
+    expect(timeline).toMatchObject({
+      merchantOrderId: "ord_test",
+      externalCaptureStatus: "COMPLETED",
+      localStatus: "PAID"
+    });
+    expect(timeline?.events).toEqual(order.evidence);
+  });
+
+  it("keeps external capture status independent from merchant-local status", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "paytrace-orders-"));
+    temporaryDirectories.push(directory);
+    const repository = new SqliteOrderRepository(join(directory, "orders.sqlite"));
+
+    await repository.save(capturedOrder("PENDING_PAYMENT"));
+    const reloaded = await repository.findByMerchantOrderId("ord_test");
+    repository.close();
+
+    expect(reloaded).toMatchObject({
+      paypalCaptureStatus: "COMPLETED",
+      localStatus: "PENDING_PAYMENT"
+    });
+  });
+
+  it("enforces uniqueness for non-null provider event IDs", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "paytrace-orders-"));
+    temporaryDirectories.push(directory);
+    const repository = new SqliteOrderRepository(join(directory, "orders.sqlite"));
+    const original = capturedOrder();
+    original.evidence[0]!.providerEventId = "WH-EVENT-1";
+    await repository.save(original);
+
+    const duplicate = structuredClone(original);
+    duplicate.evidence.push({
+      ...duplicate.evidence[0]!,
+      evidenceId: "ev_duplicate_provider_id"
+    });
+    await expect(repository.save(duplicate)).rejects.toThrow(/UNIQUE constraint failed/);
+    repository.close();
+  });
+
+  it("imports the legacy JSON store once without changing allowlisted evidence", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "paytrace-orders-"));
+    temporaryDirectories.push(directory);
+    const legacyPath = join(directory, "orders.json");
+    const databasePath = join(directory, "orders.sqlite");
+    const legacy = capturedOrder();
+    const { localStatus: _localStatus, ...legacyWithoutLocalStatus } = legacy;
+    const legacyOrder = {
+      ...legacyWithoutLocalStatus,
+      evidence: legacy.evidence.slice(0, 1).map(({ providerEventId, providerCreatedAt, verificationStatus, ...event }) => ({
+        ...event,
+        source: "PAYPAL_API_CONFIRMED"
+      }))
+    };
+    await writeFile(legacyPath, JSON.stringify({ orders: [legacyOrder] }), "utf8");
+
+    const repository = new SqliteOrderRepository(databasePath);
+    expect(await repository.importLegacyJson(legacyPath)).toBe(1);
+    expect(await repository.importLegacyJson(legacyPath)).toBe(0);
+    const imported = await repository.findByMerchantOrderId("ord_test");
+    repository.close();
+
+    expect(imported).toMatchObject({
+      paypalCaptureStatus: "COMPLETED",
+      localStatus: "PAID"
+    });
+    expect(imported?.evidence[0]).toMatchObject({
+      source: "PAYPAL_API",
+      verificationStatus: "API_RESPONSE",
+      summary: { captureId: "CAPTURE-1", status: "COMPLETED" }
+    });
   });
 });
-

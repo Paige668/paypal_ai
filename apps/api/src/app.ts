@@ -45,6 +45,7 @@ export function createApp(options: {
         paypalCaptureId: null,
         paypalOrderStatus: paypalOrder.status === "CREATED" ? "CREATED" : "APPROVED",
         paypalCaptureStatus: null,
+        localStatus: "PENDING_PAYMENT",
         amount: input,
         createdAt: observedAt,
         updatedAt: observedAt,
@@ -52,9 +53,12 @@ export function createApp(options: {
         evidence: [
           {
             evidenceId: `ev_${randomUUID()}`,
-            source: "PAYPAL_API_CONFIRMED",
+            source: "PAYPAL_API",
+            providerEventId: null,
             kind: "ORDER_CREATED",
+            verificationStatus: "API_RESPONSE",
             observedAt,
+            providerCreatedAt: null,
             summary: { paypalOrderId: paypalOrder.id, status: paypalOrder.status }
           }
         ]
@@ -76,6 +80,16 @@ export function createApp(options: {
     }
   });
 
+  app.get("/api/orders/:merchantOrderId/timeline", async (request, response, next) => {
+    try {
+      const timeline = await options.orders.getTimeline(request.params.merchantOrderId);
+      if (!timeline) return response.status(404).json({ error: "ORDER_NOT_FOUND" });
+      return response.json(timeline);
+    } catch (error) {
+      return next(error);
+    }
+  });
+
   app.post("/api/orders/:merchantOrderId/capture", async (request, response, next) => {
     try {
       const order = await options.orders.findByMerchantOrderId(request.params.merchantOrderId);
@@ -91,6 +105,7 @@ export function createApp(options: {
         paypalCaptureId: result.captureId,
         paypalOrderStatus: result.orderStatus === "COMPLETED" ? "COMPLETED" : "APPROVED",
         paypalCaptureStatus: result.captureStatus,
+        localStatus: result.captureStatus === "COMPLETED" ? "PAID" : order.localStatus,
         amount: { currencyCode: result.currencyCode, value: result.value },
         updatedAt: observedAt,
         captureObservedAt: observedAt,
@@ -98,9 +113,12 @@ export function createApp(options: {
           ...order.evidence,
           {
             evidenceId: `ev_${randomUUID()}`,
-            source: "PAYPAL_API_CONFIRMED",
+            source: "PAYPAL_API",
+            providerEventId: null,
             kind: result.captureStatus === "COMPLETED" ? "CAPTURE_COMPLETED" : "CAPTURE_OBSERVED",
+            verificationStatus: "API_RESPONSE",
             observedAt,
+            providerCreatedAt: null,
             summary: {
               paypalOrderId: result.orderId,
               captureId: result.captureId,
@@ -108,7 +126,17 @@ export function createApp(options: {
               currencyCode: result.currencyCode,
               value: result.value
             }
-          }
+          },
+          ...(result.captureStatus === "COMPLETED" ? [{
+            evidenceId: `ev_${randomUUID()}`,
+            source: "MERCHANT" as const,
+            providerEventId: null,
+            kind: "MERCHANT_STATUS_UPDATED" as const,
+            verificationStatus: "MERCHANT_RECORDED" as const,
+            observedAt,
+            providerCreatedAt: null,
+            summary: { localStatus: "PAID", trigger: "confirmed capture response" }
+          }] : [])
         ]
       };
       await options.orders.save(updated);

@@ -7,6 +7,7 @@ const environmentSchema = z.object({
   PAYPAL_CLIENT_ID: z.string().min(1),
   PAYPAL_CLIENT_SECRET: z.string().min(1),
   PAYPAL_API_BASE_URL: z.string().url().default("https://api-m.sandbox.paypal.com"),
+  DATABASE_PATH: z.string().default("./data/paytrace.sqlite"),
   ORDER_STORE_PATH: z.string().default("./data/orders.json")
 });
 
