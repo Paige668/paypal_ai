@@ -3,7 +3,14 @@ import { readFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import Database from "better-sqlite3";
 import { z } from "zod";
-import type { MerchantOrder, OrderRepository, OrderTimeline, PaymentEvent } from "./types.js";
+import type {
+  MerchantOrder,
+  OrderRepository,
+  OrderTimeline,
+  PaymentEvent,
+  VerifiedWebhookEvent,
+  WebhookIngestStatus
+} from "./types.js";
 
 const legacyOrderSchema = z.object({
   merchantOrderId: z.string().startsWith("ord_"),
@@ -170,6 +177,70 @@ export class SqliteOrderRepository implements OrderRepository {
       externalCaptureStatus: order.paypalCaptureStatus,
       events: order.evidence
     };
+  }
+
+  async recordVerifiedWebhook(event: VerifiedWebhookEvent): Promise<WebhookIngestStatus> {
+    const ingest = this.database.transaction((value: VerifiedWebhookEvent): WebhookIngestStatus => {
+      const duplicate = this.database.prepare(
+        "SELECT 1 FROM payment_events WHERE provider_event_id = ?"
+      ).get(value.providerEventId);
+      if (duplicate) return "DUPLICATE";
+
+      const order = this.database.prepare(`
+        SELECT id
+        FROM merchant_orders
+        WHERE paypal_order_id = @paypalOrderId
+           OR paypal_capture_id = @paypalCaptureId
+        LIMIT 1
+      `).get({
+        paypalOrderId: value.paypalOrderId,
+        paypalCaptureId: value.paypalCaptureId
+      }) as { id: string } | undefined;
+
+      this.database.prepare(`
+        INSERT INTO payment_events (
+          id, source, provider_event_id, paypal_order_id, paypal_capture_id,
+          merchant_order_id, kind, observed_at, provider_created_at,
+          verification_status, summary_json
+        ) VALUES (
+          @id, 'PAYPAL_WEBHOOK', @providerEventId, @paypalOrderId, @paypalCaptureId,
+          @merchantOrderId, @kind, @observedAt, @providerCreatedAt,
+          'VERIFIED_WEBHOOK', @summaryJson
+        )
+      `).run({
+        id: `ev_webhook_${value.providerEventId}`,
+        providerEventId: value.providerEventId,
+        paypalOrderId: value.paypalOrderId,
+        paypalCaptureId: value.paypalCaptureId,
+        merchantOrderId: order?.id ?? null,
+        kind: value.eventType === "PAYMENT.CAPTURE.COMPLETED"
+          ? "WEBHOOK_CAPTURE_COMPLETED"
+          : "WEBHOOK_EVENT_OBSERVED",
+        observedAt: value.observedAt,
+        providerCreatedAt: value.providerCreatedAt,
+        summaryJson: JSON.stringify(value.summary)
+      });
+
+      if (!order) return "QUARANTINED";
+
+      if (value.eventType === "PAYMENT.CAPTURE.COMPLETED") {
+        this.database.prepare(`
+          UPDATE merchant_orders
+          SET paypal_capture_id = COALESCE(paypal_capture_id, @paypalCaptureId),
+              external_capture_status = @captureStatus,
+              capture_observed_at = COALESCE(capture_observed_at, @observedAt),
+              updated_at = @observedAt
+          WHERE id = @merchantOrderId
+        `).run({
+          paypalCaptureId: value.paypalCaptureId,
+          captureStatus: value.captureStatus,
+          observedAt: value.observedAt,
+          merchantOrderId: order.id
+        });
+      }
+      return "PROCESSED";
+    });
+    return ingest(event);
   }
 
   async importLegacyJson(filePath: string): Promise<number> {

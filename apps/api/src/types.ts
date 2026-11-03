@@ -7,7 +7,7 @@ export interface PaymentEvent {
   evidenceId: string;
   source: PaymentEventSource;
   providerEventId: string | null;
-  kind: "ORDER_CREATED" | "CAPTURE_COMPLETED" | "CAPTURE_OBSERVED" | "MERCHANT_STATUS_UPDATED";
+  kind: "ORDER_CREATED" | "CAPTURE_COMPLETED" | "CAPTURE_OBSERVED" | "MERCHANT_STATUS_UPDATED" | "WEBHOOK_CAPTURE_COMPLETED" | "WEBHOOK_EVENT_OBSERVED";
   verificationStatus: VerificationStatus;
   observedAt: string;
   providerCreatedAt: string | null;
@@ -57,14 +57,39 @@ export interface CapturePayPalOrderResult {
   value: string;
 }
 
+export interface VerifyPayPalWebhookInput {
+  webhookId: string;
+  transmissionId: string;
+  transmissionTime: string;
+  certUrl: string;
+  authAlgo: string;
+  transmissionSignature: string;
+  event: Record<string, unknown>;
+}
+
+export interface VerifiedWebhookEvent {
+  providerEventId: string;
+  eventType: string;
+  paypalOrderId: string | null;
+  paypalCaptureId: string | null;
+  captureStatus: string | null;
+  observedAt: string;
+  providerCreatedAt: string | null;
+  summary: Record<string, string>;
+}
+
+export type WebhookIngestStatus = "PROCESSED" | "DUPLICATE" | "QUARANTINED";
+
 export interface PayPalGateway {
   createOrder(input: CreatePayPalOrderInput): Promise<CreatePayPalOrderResult>;
   captureOrder(paypalOrderId: string, requestId: string): Promise<CapturePayPalOrderResult>;
+  verifyWebhookSignature(input: VerifyPayPalWebhookInput): Promise<boolean>;
 }
 
 export interface OrderRepository {
   save(order: MerchantOrder): Promise<void>;
   findByMerchantOrderId(id: string): Promise<MerchantOrder | null>;
   getTimeline(id: string): Promise<OrderTimeline | null>;
+  recordVerifiedWebhook(event: VerifiedWebhookEvent): Promise<WebhookIngestStatus>;
 }
 

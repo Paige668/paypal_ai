@@ -3,7 +3,8 @@ import type {
   CapturePayPalOrderResult,
   CreatePayPalOrderInput,
   CreatePayPalOrderResult,
-  PayPalGateway
+  PayPalGateway,
+  VerifyPayPalWebhookInput
 } from "./types.js";
 
 const tokenSchema = z.object({
@@ -35,6 +36,10 @@ const captureOrderSchema = z.object({
       })
     })
   ).min(1)
+});
+
+const webhookVerificationSchema = z.object({
+  verification_status: z.enum(["SUCCESS", "FAILURE"])
 });
 
 export class PayPalApiError extends Error {
@@ -104,6 +109,25 @@ export class PayPalClient implements PayPalGateway {
       currencyCode: capture.amount.currency_code,
       value: capture.amount.value
     };
+  }
+
+  async verifyWebhookSignature(input: VerifyPayPalWebhookInput): Promise<boolean> {
+    const response = webhookVerificationSchema.parse(
+      await this.paypalFetch("/v1/notifications/verify-webhook-signature", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          auth_algo: input.authAlgo,
+          cert_url: input.certUrl,
+          transmission_id: input.transmissionId,
+          transmission_sig: input.transmissionSignature,
+          transmission_time: input.transmissionTime,
+          webhook_id: input.webhookId,
+          webhook_event: input.event
+        })
+      })
+    );
+    return response.verification_status === "SUCCESS";
   }
 
   private async paypalFetch(path: string, init: RequestInit): Promise<unknown> {

@@ -105,6 +105,38 @@ describe("SqliteOrderRepository", () => {
     repository.close();
   });
 
+  it("records a verified webhook transactionally and deduplicates its provider event ID", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "paytrace-orders-"));
+    temporaryDirectories.push(directory);
+    const repository = new SqliteOrderRepository(join(directory, "orders.sqlite"));
+    await repository.save(capturedOrder("PENDING_PAYMENT"));
+    const event = {
+      providerEventId: "WH-EVENT-1",
+      eventType: "PAYMENT.CAPTURE.COMPLETED",
+      paypalOrderId: "PAYPAL-1",
+      paypalCaptureId: "CAPTURE-1",
+      captureStatus: "COMPLETED",
+      observedAt: "2026-11-03T10:00:00.000Z",
+      providerCreatedAt: "2026-11-03T09:59:59.000Z",
+      summary: { eventType: "PAYMENT.CAPTURE.COMPLETED", captureId: "CAPTURE-1" }
+    };
+
+    expect(await repository.recordVerifiedWebhook(event)).toBe("PROCESSED");
+    expect(await repository.recordVerifiedWebhook(event)).toBe("DUPLICATE");
+    expect(await repository.recordVerifiedWebhook({
+      ...event,
+      providerEventId: "WH-EVENT-UNKNOWN",
+      paypalOrderId: "PAYPAL-UNKNOWN",
+      paypalCaptureId: "CAPTURE-UNKNOWN"
+    })).toBe("QUARANTINED");
+    const timeline = await repository.getTimeline("ord_test");
+    repository.close();
+
+    expect(timeline?.localStatus).toBe("PENDING_PAYMENT");
+    expect(timeline?.externalCaptureStatus).toBe("COMPLETED");
+    expect(timeline?.events.filter((item) => item.providerEventId === "WH-EVENT-1")).toHaveLength(1);
+  });
+
   it("imports the legacy JSON store once without changing allowlisted evidence", async () => {
     const directory = await mkdtemp(join(tmpdir(), "paytrace-orders-"));
     temporaryDirectories.push(directory);

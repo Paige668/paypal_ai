@@ -23,6 +23,7 @@ const app = createApp({
   paypal,
   orders,
   paypalClientId: config.PAYPAL_CLIENT_ID,
+  paypalWebhookId: config.PAYPAL_WEBHOOK_ID,
   webOrigin: config.WEB_ORIGIN
 });
 
