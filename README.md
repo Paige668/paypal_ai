@@ -2,7 +2,7 @@
 
 PayTrace is a developer-first PayPal Sandbox incident investigation lab. This repository currently implements the local development plan through **2026-11-03**: a React/Express TypeScript application, server-side PayPal OAuth, Orders v2 creation and capture, a transactional SQLite evidence timeline, and a signature-gated PayPal Webhook inbox.
 
-This is not a production payment system. It uses Sandbox only. The Webhook listener and official PayPal postback verification flow are implemented and tested with mocked HTTP boundaries; a genuine app-linked Sandbox Webhook delivery is still pending. Reconciliation, AI investigation, and merchant-fault replay belong to later milestones.
+This is not a production payment system. It uses Sandbox only. The Webhook listener and official PayPal postback verification flow are implemented, covered by automated tests, and verified with a genuine app-linked Sandbox Webhook delivery. Reconciliation, AI investigation, and merchant-fault replay belong to later milestones.
 
 ## Current trust boundary
 
@@ -82,7 +82,7 @@ The project owner completed steps 3–6 with a real Sandbox personal buyer on 20
 - `PAYMENT.CAPTURE.COMPLETED` updates external capture evidence without deriving merchant-local status from the Webhook payload.
 - Raw payloads and buyer data are not stored.
 
-A public HTTPS listener must be registered on the same Sandbox REST app before genuine delivery can be marked verified. PayPal Webhooks Simulator events do not support postback verification and do not count as app-linked Sandbox evidence.
+A genuine `PAYMENT.CAPTURE.COMPLETED` delivery from the same Sandbox REST app was verified on 2026-11-04 through a temporary public HTTPS tunnel. The event passed PayPal's official postback signature verification, was recorded once with `PAYPAL_WEBHOOK` provenance and `VERIFIED_WEBHOOK` status, remained deduplicated after redelivery, and persisted across an API restart. The temporary tunnel was stopped after validation. PayPal Webhooks Simulator events do not support postback verification and do not count as app-linked Sandbox evidence.
 
 ## API surface implemented so far
 

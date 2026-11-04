@@ -66,7 +66,7 @@ export class WebhookService {
     const verified = await this.paypal.verifyWebhookSignature({
       webhookId: this.webhookId,
       ...headers,
-      event: event as Record<string, unknown>
+      event: json as Record<string, unknown>
     });
     if (!verified) {
       throw new WebhookServiceError("INVALID_WEBHOOK_SIGNATURE", 400);

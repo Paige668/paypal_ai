@@ -90,7 +90,12 @@ function captureCompletedWebhook(paypalOrderId = "PAYPAL-ORDER-1") {
       id: "CAPTURE-WEBHOOK-1",
       status: "COMPLETED",
       amount: { currency_code: "USD", value: "12.34" },
-      supplementary_data: { related_ids: { order_id: paypalOrderId } },
+      supplementary_data: {
+        related_ids: {
+          order_id: paypalOrderId,
+          authorization_id: "AUTHORIZATION-MUST-REACH-VERIFICATION"
+        }
+      },
       payer: { email_address: "must-not-be-stored@example.com" }
     }
   };
@@ -163,6 +168,9 @@ describe("orders API", () => {
     expect(first.body).toEqual({ status: "PROCESSED" });
     expect(duplicate.body).toEqual({ status: "DUPLICATE" });
     expect(paypal.verifyWebhookSignature).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(paypal.verifyWebhookSignature).mock.calls[0]?.[0].event).toEqual(
+      captureCompletedWebhook()
+    );
     expect(timeline.body).toMatchObject({
       externalCaptureStatus: "COMPLETED",
       localStatus: "PENDING_PAYMENT"
