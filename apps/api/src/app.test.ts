@@ -227,6 +227,21 @@ async function createDetectedScenario(app: ReturnType<typeof createApp>): Promis
 }
 
 describe("orders API", () => {
+  it("exposes only public demo configuration to the browser", async () => {
+    const { app } = setup({ demoMode: true, graceMs: 5_000 });
+    const response = await request(app).get("/api/config/paypal");
+
+    expect(response.body).toEqual({
+      clientId: "public-sandbox-id",
+      currency: "USD",
+      environment: "sandbox",
+      demoMode: true,
+      reconciliationGraceMs: 5_000
+    });
+    expect(JSON.stringify(response.body)).not.toContain("secret");
+    expect(JSON.stringify(response.body)).not.toContain("OPENAI_API_KEY");
+  });
+
   it("creates, maps, captures, and returns allowlisted evidence", async () => {
     const { app, paypal } = setup();
     const created = await request(app).post("/api/orders").send({ currencyCode: "USD", value: "12.34" });

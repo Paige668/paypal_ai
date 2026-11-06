@@ -42,7 +42,13 @@ export function createApp(options: {
 
   app.get("/api/health", (_request, response) => response.json({ status: "ok" }));
   app.get("/api/config/paypal", (_request, response) =>
-    response.json({ clientId: options.paypalClientId, currency: "USD", environment: "sandbox" })
+    response.json({
+      clientId: options.paypalClientId,
+      currency: "USD",
+      environment: "sandbox",
+      demoMode: options.demoMode ?? false,
+      reconciliationGraceMs: options.reconciliationGraceMs ?? 60_000
+    })
   );
   app.use("/api/orders", createOrderRouter(orderService));
   app.use("/api/demo", createDemoRouter(demoService));
