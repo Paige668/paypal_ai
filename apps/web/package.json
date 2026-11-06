@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "lint": "tsc -b --pretty false"
+    "lint": "tsc -b --pretty false",
+    "test": "vitest run src"
   },
   "dependencies": {
     "@vitejs/plugin-react": "^4.3.4",
@@ -16,7 +17,8 @@
   },
   "devDependencies": {
     "@types/react": "^19.0.8",
-    "@types/react-dom": "^19.0.3"
+    "@types/react-dom": "^19.0.3",
+    "vitest": "^4.1.12"
   }
 }
 
