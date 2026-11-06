@@ -134,6 +134,21 @@ Before final acceptance or recording the submission demo:
 
 This is a release-blocking checklist item, not a requirement for day-to-day development. Do not record the final demo or mark the project submission-ready until it is complete.
 
+## November 7 single-purpose investigation UI
+
+The React application now presents the complete workflow on one responsive screen:
+
+1. Complete a genuine PayPal Sandbox checkout and confirm the normal `COMPLETED | PAID` path.
+2. Start the explicitly labeled simulated merchant-update failure; provider evidence remains unchanged.
+3. Run deterministic reconciliation after the displayed application grace period.
+4. Inspect the Incident and its linked Capture and merchant-fault evidence IDs.
+5. Generate the persisted evidence-grounded AI report, or the honest rule-based fallback when AI is unavailable.
+6. Replay the merchant-only scenario with a new scenario ID or reset merchant state without making another PayPal call.
+
+The UI visually distinguishes `Sandbox PayPal API`, `Verified PayPal Webhook`, `Merchant`, and `Simulated merchant fault` provenance. Report citations navigate to the referenced timeline event, while facts, hypotheses, unknowns, and safe next steps remain separate. Empty, loading, disabled-demo, grace-period, fallback, and request-error states are represented without hiding the deterministic evidence.
+
+Implementation verification includes 24 API tests, 3 focused web presentation tests, TypeScript lint checks, and a production build. Final browser walkthrough with the project owner's Sandbox buyer remains a manual acceptance item and must not be marked complete from automated checks alone.
+
 A genuine `PAYMENT.CAPTURE.COMPLETED` delivery from the same Sandbox REST app was verified on 2026-11-04 through a temporary public HTTPS tunnel. The event passed PayPal's official postback signature verification, was recorded once with `PAYPAL_WEBHOOK` provenance and `VERIFIED_WEBHOOK` status, remained deduplicated after redelivery, and persisted across an API restart. The temporary tunnel was stopped after validation. PayPal Webhooks Simulator events do not support postback verification and do not count as app-linked Sandbox evidence.
 
 ## API surface implemented so far
