@@ -65,12 +65,12 @@ npm run lint
 
 The project owner completed steps 3–6 with a real Sandbox personal buyer on 2026-11-02. Automated tests continue to use a mocked provider and temporary local databases; credentials are never used in the test suite.
 
-## November 2 state and timeline
+## State, timeline, and Incident persistence
 
 - `merchant_orders` stores PayPal external status independently from merchant-local status.
 - `payment_events` records ordered, allowlisted evidence with source and verification status.
-- A partial unique index reserves non-null PayPal provider event IDs for later webhook deduplication.
-- `incidents` is created as an empty schema for the later deterministic reconciliation milestone.
+- A partial unique index enforces deduplication for non-null PayPal provider event IDs received through the verified Webhook inbox.
+- `scenario_runs`, `incidents`, and `ai_reports` persist the merchant-only reproduction, deterministic mismatch finding, and evidence-grounded investigation separately from payment evidence.
 - A normal completed capture records external `COMPLETED` and a separate merchant transition to `PAID`.
 
 ## November 3 Webhook inbox
