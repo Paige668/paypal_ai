@@ -7,7 +7,10 @@ import type {
   MerchantOrder,
   OrderRepository,
   OrderTimeline,
+  PaymentIncident,
   PaymentEvent,
+  ScenarioRun,
+  StoredInvestigation,
   VerifiedWebhookEvent,
   WebhookIngestStatus
 } from "./types.js";
@@ -48,6 +51,38 @@ interface OrderRow {
   created_at: string;
   updated_at: string;
   capture_observed_at: string | null;
+  inject_merchant_update_failure: number;
+  current_scenario_run_id: string | null;
+}
+
+interface ScenarioRow {
+  id: string;
+  merchant_order_id: string;
+  scenario_type: "MERCHANT_UPDATE_FAILURE";
+  status: "ACTIVE" | "RESET";
+  started_at: string;
+  replay_of_scenario_run_id: string | null;
+}
+
+interface IncidentRow {
+  id: string;
+  merchant_order_id: string;
+  scenario_run_id: string;
+  type: "PAYMENT_CAPTURED_MERCHANT_PENDING";
+  status: "OPEN" | "RESOLVED";
+  detected_at: string;
+  capture_evidence_event_id: string;
+  merchant_status_evidence_event_id: string;
+  reconciliation_version: "MISMATCH_CAPTURED_PENDING@1";
+}
+
+interface InvestigationRow {
+  incident_id: string;
+  status: StoredInvestigation["status"];
+  model: string | null;
+  generated_at: string;
+  failure_code: StoredInvestigation["failureCode"];
+  report_json: string;
 }
 
 interface EventRow {
@@ -100,11 +135,13 @@ export class SqliteOrderRepository implements OrderRepository {
         INSERT INTO merchant_orders (
           id, paypal_order_id, paypal_capture_id, paypal_order_status,
           external_capture_status, local_status, amount_minor, currency,
-          created_at, updated_at, capture_observed_at
+          created_at, updated_at, capture_observed_at,
+          inject_merchant_update_failure, current_scenario_run_id
         ) VALUES (
           @id, @paypalOrderId, @paypalCaptureId, @paypalOrderStatus,
           @externalCaptureStatus, @localStatus, @amountMinor, @currency,
-          @createdAt, @updatedAt, @captureObservedAt
+          @createdAt, @updatedAt, @captureObservedAt,
+          @injectMerchantUpdateFailure, @currentScenarioRunId
         )
         ON CONFLICT(id) DO UPDATE SET
           paypal_order_id = excluded.paypal_order_id,
@@ -115,7 +152,9 @@ export class SqliteOrderRepository implements OrderRepository {
           amount_minor = excluded.amount_minor,
           currency = excluded.currency,
           updated_at = excluded.updated_at,
-          capture_observed_at = excluded.capture_observed_at
+          capture_observed_at = excluded.capture_observed_at,
+          inject_merchant_update_failure = excluded.inject_merchant_update_failure,
+          current_scenario_run_id = excluded.current_scenario_run_id
       `).run({
         id: value.merchantOrderId,
         paypalOrderId: value.paypalOrderId,
@@ -127,7 +166,9 @@ export class SqliteOrderRepository implements OrderRepository {
         currency: value.amount.currencyCode,
         createdAt: value.createdAt,
         updatedAt: value.updatedAt,
-        captureObservedAt: value.captureObservedAt
+        captureObservedAt: value.captureObservedAt,
+        injectMerchantUpdateFailure: value.merchantUpdateFailureInjected ? 1 : 0,
+        currentScenarioRunId: value.scenarioRunId
       });
 
       const insertEvent = this.database.prepare(`
@@ -243,6 +284,181 @@ export class SqliteOrderRepository implements OrderRepository {
     return ingest(event);
   }
 
+  async startMerchantFailureScenario(input: {
+    merchantOrderId: string;
+    scenarioRunId: string;
+    observedAt: string;
+    replayOfScenarioRunId: string | null;
+  }): Promise<ScenarioRun | null> {
+    const start = this.database.transaction(() => {
+      const order = this.database.prepare("SELECT * FROM merchant_orders WHERE id = ?")
+        .get(input.merchantOrderId) as OrderRow | undefined;
+      if (!order) return false;
+
+      this.database.prepare(`
+        UPDATE scenario_runs SET status = 'RESET'
+        WHERE merchant_order_id = ? AND status = 'ACTIVE'
+      `).run(input.merchantOrderId);
+      this.database.prepare(`
+        UPDATE incidents SET status = 'RESOLVED'
+        WHERE merchant_order_id = ? AND status = 'OPEN'
+      `).run(input.merchantOrderId);
+      this.database.prepare(`
+        INSERT INTO scenario_runs (
+          id, merchant_order_id, scenario_type, status, started_at, replay_of_scenario_run_id
+        ) VALUES (?, ?, 'MERCHANT_UPDATE_FAILURE', 'ACTIVE', ?, ?)
+      `).run(input.scenarioRunId, input.merchantOrderId, input.observedAt, input.replayOfScenarioRunId);
+      this.database.prepare(`
+        UPDATE merchant_orders
+        SET inject_merchant_update_failure = 1,
+            current_scenario_run_id = @scenarioRunId,
+            local_status = CASE
+              WHEN external_capture_status = 'COMPLETED' THEN 'PENDING_PAYMENT'
+              ELSE local_status
+            END,
+            updated_at = @observedAt
+        WHERE id = @merchantOrderId
+      `).run(input);
+      this.database.prepare(`
+        INSERT INTO payment_events (
+          id, source, provider_event_id, paypal_order_id, paypal_capture_id,
+          merchant_order_id, kind, observed_at, provider_created_at,
+          verification_status, summary_json
+        ) VALUES (
+          @id, 'DEMO_INJECTION', NULL, @paypalOrderId, @paypalCaptureId,
+          @merchantOrderId, 'MERCHANT_UPDATE_FAILURE_INJECTED', @observedAt, NULL,
+          'SIMULATED', @summaryJson
+        )
+      `).run({
+        id: `ev_demo_${input.scenarioRunId}`,
+        paypalOrderId: order.paypal_order_id,
+        paypalCaptureId: order.paypal_capture_id,
+        merchantOrderId: input.merchantOrderId,
+        observedAt: input.observedAt,
+        summaryJson: JSON.stringify({
+          scenarioRunId: input.scenarioRunId,
+          scenarioType: "MERCHANT_UPDATE_FAILURE",
+          action: input.replayOfScenarioRunId ? "REPLAY" : "INJECT",
+          localStatus: order.external_capture_status === "COMPLETED" ? "PENDING_PAYMENT" : order.local_status
+        })
+      });
+      return true;
+    });
+    if (!start()) return null;
+    return this.findScenarioRun(input.scenarioRunId);
+  }
+
+  async resetMerchantFailureScenario(merchantOrderId: string, observedAt: string): Promise<MerchantOrder | null> {
+    const reset = this.database.transaction(() => {
+      const row = this.database.prepare("SELECT * FROM merchant_orders WHERE id = ?").get(merchantOrderId) as OrderRow | undefined;
+      if (!row) return false;
+      if (row.current_scenario_run_id) {
+        this.database.prepare("UPDATE scenario_runs SET status = 'RESET' WHERE id = ?")
+          .run(row.current_scenario_run_id);
+        this.database.prepare("UPDATE incidents SET status = 'RESOLVED' WHERE scenario_run_id = ? AND status = 'OPEN'")
+          .run(row.current_scenario_run_id);
+        this.database.prepare(`
+          INSERT INTO payment_events (
+            id, source, provider_event_id, paypal_order_id, paypal_capture_id,
+            merchant_order_id, kind, observed_at, provider_created_at,
+            verification_status, summary_json
+          ) VALUES (?, 'DEMO_INJECTION', NULL, ?, ?, ?, 'DEMO_SCENARIO_RESET', ?, NULL, 'SIMULATED', ?)
+          ON CONFLICT(id) DO NOTHING
+        `).run(
+          `ev_reset_${row.current_scenario_run_id}`,
+          row.paypal_order_id,
+          row.paypal_capture_id,
+          merchantOrderId,
+          observedAt,
+          JSON.stringify({ scenarioRunId: row.current_scenario_run_id, localStatus: row.external_capture_status === "COMPLETED" ? "PAID" : row.local_status })
+        );
+      }
+      this.database.prepare(`
+        UPDATE merchant_orders
+        SET inject_merchant_update_failure = 0,
+            current_scenario_run_id = NULL,
+            local_status = CASE WHEN external_capture_status = 'COMPLETED' THEN 'PAID' ELSE local_status END,
+            updated_at = ?
+        WHERE id = ?
+      `).run(observedAt, merchantOrderId);
+      return true;
+    });
+    if (!reset()) return null;
+    return this.findByMerchantOrderId(merchantOrderId);
+  }
+
+  async findScenarioRun(scenarioRunId: string): Promise<ScenarioRun | null> {
+    const row = this.database.prepare("SELECT * FROM scenario_runs WHERE id = ?").get(scenarioRunId) as ScenarioRow | undefined;
+    if (!row) return null;
+    const incident = this.database.prepare("SELECT * FROM incidents WHERE scenario_run_id = ? ORDER BY detected_at DESC LIMIT 1")
+      .get(scenarioRunId) as IncidentRow | undefined;
+    return {
+      scenarioRunId: row.id,
+      merchantOrderId: row.merchant_order_id,
+      scenarioType: row.scenario_type,
+      status: row.status,
+      startedAt: row.started_at,
+      replayOfScenarioRunId: row.replay_of_scenario_run_id,
+      incident: incident ? this.mapIncident(incident) : null
+    };
+  }
+
+  async createMismatchIncident(input: {
+    merchantOrderId: string;
+    scenarioRunId: string;
+    detectedAt: string;
+    captureEvidenceId: string;
+    merchantStatusEvidenceId: string;
+  }): Promise<PaymentIncident> {
+    this.database.prepare(`
+      INSERT OR IGNORE INTO incidents (
+        id, merchant_order_id, scenario_run_id, type, status, detected_at,
+        capture_evidence_event_id, merchant_status_evidence_event_id, reconciliation_version
+      ) VALUES (
+        @id, @merchantOrderId, @scenarioRunId, 'PAYMENT_CAPTURED_MERCHANT_PENDING', 'OPEN', @detectedAt,
+        @captureEvidenceId, @merchantStatusEvidenceId, 'MISMATCH_CAPTURED_PENDING@1'
+      )
+    `).run({ ...input, id: `inc_${input.scenarioRunId}` });
+    const row = this.database.prepare(`
+      SELECT * FROM incidents WHERE scenario_run_id = ? AND type = 'PAYMENT_CAPTURED_MERCHANT_PENDING'
+    `).get(input.scenarioRunId) as IncidentRow;
+    return this.mapIncident(row);
+  }
+
+  async saveInvestigation(investigation: StoredInvestigation): Promise<void> {
+    this.database.prepare(`
+      INSERT INTO ai_reports (incident_id, status, model, generated_at, failure_code, report_json)
+      VALUES (@incidentId, @status, @model, @generatedAt, @failureCode, @reportJson)
+      ON CONFLICT(incident_id) DO UPDATE SET
+        status = excluded.status,
+        model = excluded.model,
+        generated_at = excluded.generated_at,
+        failure_code = excluded.failure_code,
+        report_json = excluded.report_json
+    `).run({
+      incidentId: investigation.incidentId,
+      status: investigation.status,
+      model: investigation.model,
+      generatedAt: investigation.generatedAt,
+      failureCode: investigation.failureCode,
+      reportJson: JSON.stringify(investigation.report)
+    });
+  }
+
+  async findInvestigation(incidentId: string): Promise<StoredInvestigation | null> {
+    const row = this.database.prepare("SELECT * FROM ai_reports WHERE incident_id = ?")
+      .get(incidentId) as InvestigationRow | undefined;
+    if (!row) return null;
+    return {
+      incidentId: row.incident_id,
+      status: row.status,
+      model: row.model,
+      generatedAt: row.generated_at,
+      failureCode: row.failure_code,
+      report: JSON.parse(row.report_json) as StoredInvestigation["report"]
+    };
+  }
+
   async importLegacyJson(filePath: string): Promise<number> {
     const existing = this.database.prepare("SELECT COUNT(*) AS count FROM merchant_orders").get() as { count: number };
     if (existing.count > 0) return 0;
@@ -260,6 +476,8 @@ export class SqliteOrderRepository implements OrderRepository {
       await this.save({
         ...legacy,
         localStatus: legacy.paypalCaptureStatus === "COMPLETED" ? "PAID" : "PENDING_PAYMENT",
+        merchantUpdateFailureInjected: false,
+        scenarioRunId: null,
         evidence: legacy.evidence.map((event) => ({
           ...event,
           source: "PAYPAL_API",
@@ -295,7 +513,23 @@ export class SqliteOrderRepository implements OrderRepository {
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       captureObservedAt: row.capture_observed_at,
+      merchantUpdateFailureInjected: row.inject_merchant_update_failure === 1,
+      scenarioRunId: row.current_scenario_run_id,
       evidence: events.map(mapEvent)
+    };
+  }
+
+  private mapIncident(row: IncidentRow): PaymentIncident {
+    return {
+      incidentId: row.id,
+      merchantOrderId: row.merchant_order_id,
+      scenarioRunId: row.scenario_run_id,
+      type: row.type,
+      status: row.status,
+      detectedAt: row.detected_at,
+      captureEvidenceId: row.capture_evidence_event_id,
+      merchantStatusEvidenceId: row.merchant_status_evidence_event_id,
+      reconciliationVersion: row.reconciliation_version
     };
   }
 
@@ -313,7 +547,8 @@ export class SqliteOrderRepository implements OrderRepository {
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         capture_observed_at TEXT,
-        inject_merchant_update_failure INTEGER NOT NULL DEFAULT 0 CHECK (inject_merchant_update_failure IN (0, 1))
+        inject_merchant_update_failure INTEGER NOT NULL DEFAULT 0 CHECK (inject_merchant_update_failure IN (0, 1)),
+        current_scenario_run_id TEXT
       );
 
       CREATE TABLE IF NOT EXISTS payment_events (
@@ -354,7 +589,44 @@ export class SqliteOrderRepository implements OrderRepository {
         FOREIGN KEY (merchant_status_evidence_event_id) REFERENCES payment_events(id)
       );
 
-      PRAGMA user_version = 1;
+      CREATE TABLE IF NOT EXISTS scenario_runs (
+        id TEXT PRIMARY KEY,
+        merchant_order_id TEXT NOT NULL,
+        scenario_type TEXT NOT NULL CHECK (scenario_type = 'MERCHANT_UPDATE_FAILURE'),
+        status TEXT NOT NULL CHECK (status IN ('ACTIVE', 'RESET')),
+        started_at TEXT NOT NULL,
+        replay_of_scenario_run_id TEXT,
+        FOREIGN KEY (merchant_order_id) REFERENCES merchant_orders(id),
+        FOREIGN KEY (replay_of_scenario_run_id) REFERENCES scenario_runs(id)
+      );
+
+      CREATE TABLE IF NOT EXISTS ai_reports (
+        incident_id TEXT PRIMARY KEY,
+        status TEXT NOT NULL CHECK (status IN ('AI_GENERATED', 'FALLBACK')),
+        model TEXT,
+        generated_at TEXT NOT NULL,
+        failure_code TEXT CHECK (
+          failure_code IS NULL OR failure_code IN ('AI_NOT_CONFIGURED', 'AI_REQUEST_FAILED', 'AI_OUTPUT_INVALID')
+        ),
+        report_json TEXT NOT NULL CHECK (json_valid(report_json)),
+        FOREIGN KEY (incident_id) REFERENCES incidents(id)
+      );
+
+      PRAGMA user_version = 3;
     `);
+    this.ensureColumn("merchant_orders", "current_scenario_run_id", "TEXT");
+    this.ensureColumn("incidents", "scenario_run_id", "TEXT");
+    this.database.exec(`
+      CREATE UNIQUE INDEX IF NOT EXISTS incidents_scenario_type_unique
+        ON incidents(scenario_run_id, type)
+        WHERE scenario_run_id IS NOT NULL;
+    `);
+  }
+
+  private ensureColumn(table: "merchant_orders" | "incidents", column: string, definition: string): void {
+    const columns = this.database.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+    if (!columns.some((item) => item.name === column)) {
+      this.database.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+    }
   }
 }

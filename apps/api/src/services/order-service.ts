@@ -35,6 +35,8 @@ export class OrderService {
       createdAt: observedAt,
       updatedAt: observedAt,
       captureObservedAt: null,
+      merchantUpdateFailureInjected: false,
+      scenarioRunId: null,
       evidence: [{
         evidenceId: `ev_${randomUUID()}`,
         source: "PAYPAL_API",
@@ -76,7 +78,9 @@ export class OrderService {
       paypalCaptureId: result.captureId,
       paypalOrderStatus: result.orderStatus === "COMPLETED" ? "COMPLETED" : "APPROVED",
       paypalCaptureStatus: result.captureStatus,
-      localStatus: result.captureStatus === "COMPLETED" ? "PAID" : order.localStatus,
+      localStatus: result.captureStatus === "COMPLETED" && !order.merchantUpdateFailureInjected
+        ? "PAID"
+        : order.localStatus,
       amount: { currencyCode: result.currencyCode, value: result.value },
       updatedAt: observedAt,
       captureObservedAt: observedAt,
@@ -98,7 +102,7 @@ export class OrderService {
             value: result.value
           }
         },
-        ...(result.captureStatus === "COMPLETED" ? [{
+        ...(result.captureStatus === "COMPLETED" && !order.merchantUpdateFailureInjected ? [{
           evidenceId: `ev_${randomUUID()}`,
           source: "MERCHANT" as const,
           providerEventId: null,

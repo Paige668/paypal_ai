@@ -23,6 +23,8 @@ function capturedOrder(localStatus: MerchantOrder["localStatus"] = "PAID"): Merc
     createdAt: "2026-11-01T10:00:00.000Z",
     updatedAt: "2026-11-01T10:01:00.000Z",
     captureObservedAt: "2026-11-01T10:01:00.000Z",
+    merchantUpdateFailureInjected: false,
+    scenarioRunId: null,
     evidence: [
       {
         evidenceId: "ev_capture",
@@ -135,6 +137,68 @@ describe("SqliteOrderRepository", () => {
     expect(timeline?.localStatus).toBe("PENDING_PAYMENT");
     expect(timeline?.externalCaptureStatus).toBe("COMPLETED");
     expect(timeline?.events.filter((item) => item.providerEventId === "WH-EVENT-1")).toHaveLength(1);
+  });
+
+  it("persists distinct merchant-only scenario runs and one incident per run", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "paytrace-orders-"));
+    temporaryDirectories.push(directory);
+    const repository = new SqliteOrderRepository(join(directory, "orders.sqlite"));
+    await repository.save(capturedOrder());
+
+    const first = await repository.startMerchantFailureScenario({
+      merchantOrderId: "ord_test",
+      scenarioRunId: "scenario_first",
+      observedAt: "2026-11-05T10:00:00.000Z",
+      replayOfScenarioRunId: null
+    });
+    const faulted = await repository.findByMerchantOrderId("ord_test");
+    const incident = await repository.createMismatchIncident({
+      merchantOrderId: "ord_test",
+      scenarioRunId: "scenario_first",
+      detectedAt: "2026-11-05T10:01:01.000Z",
+      captureEvidenceId: "ev_capture",
+      merchantStatusEvidenceId: "ev_demo_scenario_first"
+    });
+    const duplicate = await repository.createMismatchIncident({
+      merchantOrderId: "ord_test",
+      scenarioRunId: "scenario_first",
+      detectedAt: "2026-11-05T10:02:00.000Z",
+      captureEvidenceId: "ev_capture",
+      merchantStatusEvidenceId: "ev_demo_scenario_first"
+    });
+    await repository.saveInvestigation({
+      incidentId: incident.incidentId,
+      status: "AI_GENERATED",
+      model: "test-model",
+      generatedAt: "2026-11-05T10:02:30.000Z",
+      failureCode: null,
+      report: {
+        label: "AI-assisted analysis",
+        summary: "Grounded test report.",
+        facts: [{ statement: "Capture completed.", evidenceIds: ["ev_capture"] }],
+        hypotheses: [],
+        unknowns: [],
+        nextSteps: []
+      }
+    });
+    const storedInvestigation = await repository.findInvestigation(incident.incidentId);
+    const replay = await repository.startMerchantFailureScenario({
+      merchantOrderId: "ord_test",
+      scenarioRunId: "scenario_replay",
+      observedAt: "2026-11-05T10:03:00.000Z",
+      replayOfScenarioRunId: "scenario_first"
+    });
+    const reset = await repository.resetMerchantFailureScenario("ord_test", "2026-11-05T10:04:00.000Z");
+    const firstAfterReplay = await repository.findScenarioRun("scenario_first");
+    repository.close();
+
+    expect(first).toMatchObject({ scenarioRunId: "scenario_first", status: "ACTIVE" });
+    expect(faulted).toMatchObject({ localStatus: "PENDING_PAYMENT", merchantUpdateFailureInjected: true });
+    expect(duplicate.incidentId).toBe(incident.incidentId);
+    expect(storedInvestigation).toMatchObject({ status: "AI_GENERATED", model: "test-model" });
+    expect(replay).toMatchObject({ scenarioRunId: "scenario_replay", replayOfScenarioRunId: "scenario_first" });
+    expect(firstAfterReplay).toMatchObject({ status: "RESET", incident: { status: "RESOLVED" } });
+    expect(reset).toMatchObject({ localStatus: "PAID", merchantUpdateFailureInjected: false, scenarioRunId: null });
   });
 
   it("imports the legacy JSON store once without changing allowlisted evidence", async () => {
