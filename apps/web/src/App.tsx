@@ -1,5 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { eventTitle, formatTime, friendlyError, provenance, workflowStage } from "./presentation";
+import {
+  amountValidationMessage,
+  demoActionHint,
+  eventTitle,
+  formatTime,
+  friendlyError,
+  graceSecondsRemaining,
+  provenance,
+  workflowStage
+} from "./presentation";
+import { clearCurrentOrderId, readCurrentOrderId, storeCurrentOrderId } from "./workspace";
 import type {
   Investigation,
   Order,
@@ -33,7 +43,10 @@ function loadPayPalSdk(clientId: string, currency: string): Promise<void> {
   if (existing) {
     return new Promise((resolve, reject) => {
       existing.addEventListener("load", () => resolve(), { once: true });
-      existing.addEventListener("error", () => reject(new Error("PayPal SDK failed to load")), { once: true });
+      existing.addEventListener("error", () => {
+        existing.remove();
+        reject(new Error("PayPal SDK failed to load"));
+      }, { once: true });
     });
   }
   return new Promise((resolve, reject) => {
@@ -41,7 +54,10 @@ function loadPayPalSdk(clientId: string, currency: string): Promise<void> {
     script.dataset.paypalSdk = "true";
     script.src = `https://www.paypal.com/sdk/js?client-id=${encodeURIComponent(clientId)}&currency=${encodeURIComponent(currency)}&intent=capture`;
     script.onload = () => resolve();
-    script.onerror = () => reject(new Error("PayPal SDK failed to load"));
+    script.onerror = () => {
+      script.remove();
+      reject(new Error("PayPal SDK failed to load"));
+    };
     document.head.appendChild(script);
   });
 }
@@ -52,6 +68,9 @@ function EvidenceLinks({ ids }: { ids: string[] }) {
     const element = document.getElementById(`evidence-${evidenceId}`);
     element?.scrollIntoView({ behavior: "smooth", block: "center" });
     element?.focus({ preventScroll: true });
+    element?.classList.remove("evidence-highlight");
+    window.requestAnimationFrame(() => element?.classList.add("evidence-highlight"));
+    window.setTimeout(() => element?.classList.remove("evidence-highlight"), 1_600);
   };
   return (
     <span className="evidence-links" aria-label="Evidence references">
@@ -158,14 +177,23 @@ export function App() {
   const [status, setStatus] = useState("Loading PayPal Sandbox…");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const [checkoutAttempt, setCheckoutAttempt] = useState(0);
+  const [checkoutUnavailable, setCheckoutUnavailable] = useState(false);
+  const [checkoutInitializing, setCheckoutInitializing] = useState(true);
+  const [clockMs, setClockMs] = useState(() => Date.now());
   const amountRef = useRef(amount);
   const orderRef = useRef<Order | null>(null);
+  const checkoutValidationRef = useRef<string | null>(null);
+  const restoreAttemptedRef = useRef(false);
   amountRef.current = amount;
   orderRef.current = order;
 
   const incident = scenario?.incident ?? (reconciliation?.status === "INCIDENT_OPEN" ? reconciliation.incident : null);
   const stage = workflowStage(order, Boolean(scenario), Boolean(incident));
   const graceSeconds = config ? Math.round(config.reconciliationGraceMs / 1_000) : 60;
+  const eligibleAt = reconciliation?.status === "GRACE_PERIOD" ? reconciliation.eligibleAt : null;
+  const remainingGraceSeconds = graceSecondsRemaining(eligibleAt, clockMs);
+  const amountError = amountValidationMessage(amount);
   const aligned = order?.paypalCaptureStatus === "COMPLETED" && order.localStatus === "PAID";
   const progress = useMemo(() => [
     { number: 1, label: "Capture", done: Boolean(order?.paypalCaptureId) },
@@ -173,6 +201,18 @@ export function App() {
     { number: 3, label: "Detect", done: Boolean(incident) },
     { number: 4, label: "Investigate", done: Boolean(investigation) }
   ], [order, scenario, incident, investigation]);
+  const actionHint = demoActionHint({
+    demoMode: config?.demoMode ?? false,
+    busy: busy !== null,
+    scenarioStatus: scenario?.status ?? null,
+    hasIncident: Boolean(incident),
+    hasInvestigation: Boolean(investigation),
+    graceRemainingSeconds: remainingGraceSeconds
+  });
+  const reconciliationDisabled = !scenario
+    || scenario.status !== "ACTIVE"
+    || busy !== null
+    || (reconciliation?.status === "GRACE_PERIOD" && remainingGraceSeconds > 0);
 
   const setFailure = (cause: unknown) => {
     const message = cause instanceof ApiError
@@ -192,16 +232,66 @@ export function App() {
   };
 
   useEffect(() => {
+    if (!eligibleAt) return;
+    const eligibleAtMs = new Date(eligibleAt).getTime();
+    const initialNow = Date.now();
+    setClockMs(initialNow);
+    if (!Number.isFinite(eligibleAtMs) || initialNow >= eligibleAtMs) return;
+    const timer = window.setInterval(() => {
+      const currentNow = Date.now();
+      setClockMs(currentNow);
+      if (currentNow >= eligibleAtMs) window.clearInterval(timer);
+    }, 250);
+    return () => window.clearInterval(timer);
+  }, [eligibleAt]);
+
+  useEffect(() => {
     let cancelled = false;
     let buttons: { render(selector: string): Promise<void>; close(): Promise<void> } | undefined;
+    setCheckoutInitializing(true);
+    setCheckoutUnavailable(false);
+    setError(null);
     api<PublicConfig>("/api/config/paypal")
       .then(async (publicConfig) => {
         if (cancelled) return;
         setConfig(publicConfig);
+        let restored = false;
+        if (!restoreAttemptedRef.current) {
+          restoreAttemptedRef.current = true;
+          const merchantOrderId = readCurrentOrderId(window.localStorage);
+          if (merchantOrderId) {
+            try {
+              const [restoredOrder, restoredTimeline] = await Promise.all([
+                api<Order>(`/api/orders/${encodeURIComponent(merchantOrderId)}`),
+                api<Timeline>(`/api/orders/${encodeURIComponent(merchantOrderId)}/timeline`)
+              ]);
+              if (cancelled) return;
+              orderRef.current = restoredOrder;
+              setOrder(restoredOrder);
+              setTimeline(restoredTimeline);
+              if (restoredOrder.scenarioRunId && publicConfig.demoMode) {
+                const restoredScenario = await api<Scenario>(`/api/demo/scenario-runs/${encodeURIComponent(restoredOrder.scenarioRunId)}`);
+                if (cancelled) return;
+                setScenario(restoredScenario);
+              }
+              restored = true;
+            } catch (cause) {
+              if (cause instanceof ApiError && cause.status === 404) clearCurrentOrderId(window.localStorage);
+              else setFailure(cause);
+            }
+          }
+        }
         await loadPayPalSdk(publicConfig.clientId, publicConfig.currency);
         if (cancelled || !window.paypal) return;
+        document.getElementById("paypal-buttons")?.replaceChildren();
         buttons = window.paypal.Buttons({
           createOrder: async () => {
+            const validationMessage = amountValidationMessage(amountRef.current);
+            if (validationMessage) {
+              checkoutValidationRef.current = validationMessage;
+              setError(validationMessage);
+              throw new Error(validationMessage);
+            }
             setError(null);
             setStatus("Creating a real PayPal Sandbox order…");
             setScenario(null); setReconciliation(null); setInvestigation(null); setTimeline(null);
@@ -211,6 +301,7 @@ export function App() {
             });
             orderRef.current = created;
             setOrder(created);
+            storeCurrentOrderId(window.localStorage, created.merchantOrderId);
             setStatus("Waiting for Sandbox buyer approval…");
             return created.paypalOrderId;
           },
@@ -226,16 +317,30 @@ export function App() {
           },
           onCancel: () => setStatus("Buyer cancelled the Sandbox checkout."),
           onError: (cause) => {
-            console.error(cause);
-            setError("PayPal Sandbox checkout failed. Check the API log and Sandbox account configuration.");
+            const validationMessage = checkoutValidationRef.current;
+            checkoutValidationRef.current = null;
+            if (!validationMessage) console.error(cause);
+            setError(validationMessage ?? "PayPal Sandbox checkout failed. Check the API log and Sandbox account configuration.");
           }
         });
         await buttons.render("#paypal-buttons");
-        if (!cancelled) setStatus("Ready for a real Sandbox checkout.");
+        if (!cancelled) {
+          setCheckoutUnavailable(false);
+          setCheckoutInitializing(false);
+          setStatus(restored
+            ? "Restored the current merchant order and retained evidence. Sandbox checkout is also ready."
+            : "Ready for a real Sandbox checkout.");
+        }
       })
-      .catch((cause) => { if (!cancelled) setFailure(cause); });
+      .catch((cause) => {
+        if (!cancelled) {
+          setCheckoutUnavailable(true);
+          setCheckoutInitializing(false);
+          setFailure(cause);
+        }
+      });
     return () => { cancelled = true; void buttons?.close(); };
-  }, []);
+  }, [checkoutAttempt]);
 
   const runAction = async (name: string, action: () => Promise<void>) => {
     setBusy(name); setError(null);
@@ -283,7 +388,7 @@ export function App() {
   });
 
   return (
-    <main>
+    <main aria-busy={busy !== null}>
       <header className="hero">
         <nav className="brand-row" aria-label="Product context">
           <a className="brand" href="#top" aria-label="PayTrace home"><span>PT</span> PayTrace</a>
@@ -299,7 +404,7 @@ export function App() {
         </ol>
       </header>
 
-      <section className="checkout-section" aria-labelledby="capture-heading">
+      <section className="checkout-section" aria-labelledby="capture-heading" aria-busy={checkoutInitializing}>
         <div className="section-heading">
           <div><p className="section-kicker">01 · Capture</p><h2 id="capture-heading">Start with a real Sandbox payment</h2></div>
           <span className="source-badge provider">Sandbox PayPal API</span>
@@ -307,11 +412,16 @@ export function App() {
         <div className="checkout-grid">
           <div>
             <p className="section-copy">The server creates and captures the order. Only allowlisted evidence is retained.</p>
-            <label className="amount-field">Amount<span><b>USD</b><input aria-label="Sandbox amount in USD" value={amount} onChange={(event) => setAmount(event.target.value)} pattern="\d+\.\d{2}" /></span></label>
+            <label className="amount-field">Amount<span><b>USD</b><input aria-label="Sandbox amount in USD" aria-invalid={amountError !== null} aria-describedby="amount-help" inputMode="decimal" autoComplete="off" value={amount} onChange={(event) => setAmount(event.target.value)} pattern="\d+\.\d{2}" /></span></label>
+            <p id="amount-help" className={amountError ? "field-help field-error" : "field-help"}>{amountError ?? "Use a positive amount with exactly two decimal places."}</p>
           </div>
           <div className="paypal-panel"><div id="paypal-buttons" /><p className="microcopy">Use a PayPal Sandbox personal buyer account.</p></div>
         </div>
-        <div className="live-status" aria-live="polite"><span className={error ? "status-dot error-dot" : "status-dot"} />{error ?? status}</div>
+        <div className="live-status" role={error ? "alert" : "status"} aria-live={error ? "assertive" : "polite"} aria-atomic="true">
+          <span className={error ? "status-dot error-dot" : "status-dot"} />
+          <span>{error ?? status}</span>
+          {checkoutUnavailable && <button type="button" className="retry-action" onClick={() => setCheckoutAttempt((attempt) => attempt + 1)}>Retry PayPal setup</button>}
+        </div>
       </section>
 
       {order ? (
@@ -335,7 +445,7 @@ export function App() {
       )}
 
       {order?.paypalCaptureStatus === "COMPLETED" && (
-        <section className="scenario-section" aria-labelledby="scenario-heading">
+        <section className="scenario-section" aria-labelledby="scenario-heading" aria-busy={busy !== null}>
           <div className="section-heading">
             <div><p className="section-kicker">02 · Simulate &nbsp;→&nbsp; 03 · Detect</p><h2 id="scenario-heading">Reproduce the merchant-side failure</h2></div>
             <span className="source-badge simulated">Simulated merchant fault</span>
@@ -343,19 +453,20 @@ export function App() {
           {!config?.demoMode && <div className="callout warning"><strong>Demo controls are disabled.</strong><span>Set <code>DEMO_MODE=true</code> on the API server and restart it. Payment features remain available.</span></div>}
           <p className="section-copy">This changes only the merchant-owned record. It never repeats Capture, creates a new PayPal order, or fabricates provider evidence.</p>
           <div className="action-bar">
-            <button className="primary-action" type="button" disabled={!config?.demoMode || busy !== null || scenario?.status === "ACTIVE"} onClick={injectFault}>{busy === "inject" ? "Starting scenario…" : "Simulate merchant update failure"}</button>
-            <button type="button" disabled={!scenario || scenario.status !== "ACTIVE" || busy !== null} onClick={reconcile}>{busy === "reconcile" ? "Checking…" : "Run deterministic reconciliation"}</button>
-            <button type="button" disabled={!scenario || scenario.status !== "ACTIVE" || busy !== null} onClick={replayScenario}>{busy === "replay" ? "Replaying…" : "Replay locally"}</button>
-            <button className="quiet-action" type="button" disabled={!scenario || scenario.status !== "ACTIVE" || busy !== null} onClick={resetScenario}>{busy === "reset" ? "Resetting…" : "Reset merchant state"}</button>
+            <button className="primary-action" type="button" aria-describedby="action-guidance" title={scenario?.status === "ACTIVE" ? "Reset the active scenario before starting another." : undefined} disabled={!config?.demoMode || busy !== null || scenario?.status === "ACTIVE"} onClick={injectFault}>{busy === "inject" ? "Starting scenario…" : "Simulate merchant update failure"}</button>
+            <button type="button" aria-describedby="action-guidance" title={remainingGraceSeconds > 0 ? `Available in ${remainingGraceSeconds}s` : undefined} disabled={reconciliationDisabled} onClick={reconcile}>{busy === "reconcile" ? "Checking…" : remainingGraceSeconds > 0 ? `Reconcile in ${remainingGraceSeconds}s` : "Run deterministic reconciliation"}</button>
+            <button type="button" aria-describedby="action-guidance" title={!scenario ? "Start a scenario first." : undefined} disabled={!scenario || scenario.status !== "ACTIVE" || busy !== null} onClick={replayScenario}>{busy === "replay" ? "Replaying…" : "Replay locally"}</button>
+            <button className="quiet-action" type="button" aria-describedby="action-guidance" title={!scenario ? "Start a scenario first." : undefined} disabled={!scenario || scenario.status !== "ACTIVE" || busy !== null} onClick={resetScenario}>{busy === "reset" ? "Resetting…" : "Reset merchant state"}</button>
           </div>
+          <p id="action-guidance" className="action-guidance" aria-live="polite"><strong>Next step:</strong> {actionHint}</p>
           <p className="grace-copy">Configured application grace period: <strong>{graceSeconds} seconds</strong>. This is not a PayPal SLA.</p>
           {scenario && <div className="scenario-record"><div><span>Scenario run</span><code>{scenario.scenarioRunId}</code></div><div><span>Status</span><strong>{scenario.status}</strong></div><div><span>Replay of</span><code>{scenario.replayOfScenarioRunId ?? "Original run"}</code></div></div>}
-          {reconciliation?.status === "GRACE_PERIOD" && <div className="callout neutral"><strong>Grace period active</strong><span>Eligible at {formatTime(reconciliation.eligibleAt)}. Reconcile again afterward.</span></div>}
+          {reconciliation?.status === "GRACE_PERIOD" && <div className="callout neutral" role="status" aria-live="polite" aria-atomic="true"><strong>{remainingGraceSeconds > 0 ? `Ready to detect in ${remainingGraceSeconds}s` : "Ready to detect"}</strong><span>{remainingGraceSeconds > 0 ? `Eligible at ${formatTime(reconciliation.eligibleAt)}.` : "The grace period has elapsed. Run reconciliation now."}</span></div>}
           {incident && (
             <article className={`incident-card ${incident.status.toLowerCase()}`}>
               <div className="incident-icon" aria-hidden="true">!</div>
               <div><p>Deterministic incident · {incident.status}</p><h3>Capture completed, merchant order pending</h3><span>{incident.reconciliationVersion} · detected {formatTime(incident.detectedAt)}</span><EvidenceLinks ids={[incident.captureEvidenceId, incident.merchantStatusEvidenceId]} /></div>
-              <button className="primary-action" type="button" disabled={incident.status !== "OPEN" || busy !== null} onClick={generateInvestigation}>{busy === "investigate" ? "Investigating…" : investigation ? "Regenerate report" : "Generate investigation"}</button>
+              <button className="primary-action" type="button" aria-describedby="action-guidance" disabled={incident.status !== "OPEN" || busy !== null} onClick={generateInvestigation}>{busy === "investigate" ? "Investigating…" : investigation ? "Regenerate report" : "Generate investigation"}</button>
             </article>
           )}
         </section>
