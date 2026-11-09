@@ -53,12 +53,12 @@ export function demoActionHint(input: {
 }): string {
   if (!input.demoMode) return "Enable DEMO_MODE on the API server to unlock the merchant-only scenario.";
   if (input.busy) return "Wait for the current action to finish.";
-  if (input.scenarioStatus !== "ACTIVE") return "Next: simulate the merchant update failure.";
+  if (input.scenarioStatus !== "ACTIVE") return "simulate the merchant update failure.";
   if (!input.hasIncident && input.graceRemainingSeconds > 0) {
     return `Wait ${input.graceRemainingSeconds}s for the application grace period.`;
   }
-  if (!input.hasIncident) return "Next: run deterministic reconciliation.";
-  if (!input.hasInvestigation) return "Next: generate the evidence-grounded investigation.";
+  if (!input.hasIncident) return "run deterministic reconciliation.";
+  if (!input.hasInvestigation) return "generate the evidence-grounded investigation.";
   return "Investigation complete. Replay locally or reset the merchant state.";
 }
 

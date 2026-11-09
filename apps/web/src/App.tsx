@@ -66,6 +66,8 @@ function EvidenceLinks({ ids }: { ids: string[] }) {
   if (!ids.length) return <span className="no-citation">No evidence reference required</span>;
   const reveal = (evidenceId: string) => {
     const element = document.getElementById(`evidence-${evidenceId}`);
+    const disclosure = element?.querySelector<HTMLDetailsElement>("details.event-disclosure");
+    if (disclosure) disclosure.open = true;
     const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
     element?.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "center" });
     element?.focus({ preventScroll: true });
@@ -101,13 +103,18 @@ function TimelineEvent({ event, index }: { event: PaymentEvent; index: number })
           <time dateTime={event.observedAt}>{formatTime(event.observedAt)}</time>
         </div>
         <h3>{eventTitle(event.kind)}</h3>
-        <p className="evidence-id">{event.evidenceId}</p>
-        <div className="event-summary">
-          {Object.entries(event.summary).map(([key, value]) => (
-            <span key={key}><b>{eventTitle(key)}</b>{value}</span>
-          ))}
-        </div>
-        <p className="verification">Verification · {event.verificationStatus.replaceAll("_", " ")}</p>
+        <details className="event-disclosure">
+          <summary>Evidence details</summary>
+          <div className="event-detail-content">
+            <p className="evidence-id">{event.evidenceId}</p>
+            <div className="event-summary">
+              {Object.entries(event.summary).map(([key, value]) => (
+                <span key={key}><b>{eventTitle(key)}</b>{value}</span>
+              ))}
+            </div>
+            <p className="verification">Verification · {event.verificationStatus.replaceAll("_", " ")}</p>
+          </div>
+        </details>
       </div>
     </li>
   );
@@ -147,20 +154,24 @@ function InvestigationPanel({ investigation }: { investigation: Investigation })
             </div>
           )) : <p className="empty-copy">No evidence-supported hypothesis was returned.</p>}
         </article>
-        <article className="report-column unknowns">
-          <h3>Unknowns</h3>
-          {investigation.report.unknowns.length
-            ? <ul>{investigation.report.unknowns.map((item) => <li key={item}>{item}</li>)}</ul>
-            : <p className="empty-copy">No unknowns were listed.</p>}
-        </article>
-        <article className="report-column next-steps">
-          <h3>Safe inspection steps</h3>
-          {investigation.report.nextSteps.length ? investigation.report.nextSteps.map((item, index) => (
-            <div className="report-item" key={`${item.action}-${index}`}>
-              <p><strong>{item.action}</strong></p><p className="reason">{item.reason}</p><EvidenceLinks ids={item.evidenceIds} />
-            </div>
-          )) : <p className="empty-copy">No next steps were returned.</p>}
-        </article>
+        <details className="report-column report-disclosure unknowns">
+          <summary><span>Unknowns</span><span>{investigation.report.unknowns.length}</span></summary>
+          <div className="report-disclosure-content">
+            {investigation.report.unknowns.length
+              ? <ul>{investigation.report.unknowns.map((item) => <li key={item}>{item}</li>)}</ul>
+              : <p className="empty-copy">No unknowns were listed.</p>}
+          </div>
+        </details>
+        <details className="report-column report-disclosure next-steps">
+          <summary><span>Safe inspection steps</span><span>{investigation.report.nextSteps.length}</span></summary>
+          <div className="report-disclosure-content">
+            {investigation.report.nextSteps.length ? investigation.report.nextSteps.map((item, index) => (
+              <div className="report-item" key={`${item.action}-${index}`}>
+                <p><strong>{item.action}</strong></p><p className="reason">{item.reason}</p><EvidenceLinks ids={item.evidenceIds} />
+              </div>
+            )) : <p className="empty-copy">No next steps were returned.</p>}
+          </div>
+        </details>
       </div>
       <p className="safety-note">Read-only analysis · No capture, refund, charge, or merchant-state tool is available to the model.</p>
     </section>
@@ -293,6 +304,7 @@ export function App() {
               setError(validationMessage);
               throw new Error(validationMessage);
             }
+            checkoutValidationRef.current = null;
             setError(null);
             setStatus("Creating a real PayPal Sandbox order…");
             setScenario(null); setReconciliation(null); setInvestigation(null); setTimeline(null);
@@ -319,7 +331,6 @@ export function App() {
           onCancel: () => setStatus("Buyer cancelled the Sandbox checkout."),
           onError: (cause) => {
             const validationMessage = checkoutValidationRef.current;
-            checkoutValidationRef.current = null;
             if (!validationMessage) console.error(cause);
             setError(validationMessage ?? "PayPal Sandbox checkout failed. Check the API log and Sandbox account configuration.");
           }
@@ -346,6 +357,14 @@ export function App() {
   const runAction = async (name: string, action: () => Promise<void>) => {
     setBusy(name); setError(null);
     try { await action(); } catch (cause) { setFailure(cause); } finally { setBusy(null); }
+  };
+
+  const updateAmount = (value: string) => {
+    setAmount(value);
+    if (!amountValidationMessage(value) && checkoutValidationRef.current) {
+      checkoutValidationRef.current = null;
+      setError(null);
+    }
   };
 
   const injectFault = () => order && runAction("inject", async () => {
@@ -413,10 +432,10 @@ export function App() {
         <div className="checkout-grid">
           <div>
             <p className="section-copy">The server creates and captures the order. Only allowlisted evidence is retained.</p>
-            <label className="amount-field">Amount<span><b>USD</b><input aria-label="Sandbox amount in USD" aria-invalid={amountError !== null} aria-describedby="amount-help" inputMode="decimal" autoComplete="off" value={amount} onChange={(event) => setAmount(event.target.value)} pattern="\d+\.\d{2}" /></span></label>
+            <label className="amount-field">Amount<span><b>USD</b><input aria-label="Sandbox amount in USD" aria-invalid={amountError !== null} aria-describedby="amount-help" inputMode="decimal" autoComplete="off" value={amount} onChange={(event) => updateAmount(event.target.value)} pattern="\d+\.\d{2}" /></span></label>
             <p id="amount-help" className={amountError ? "field-help field-error" : "field-help"}>{amountError ?? "Use a positive amount with exactly two decimal places."}</p>
           </div>
-          <div className="paypal-panel"><div id="paypal-buttons" /><p className="microcopy">Use a PayPal Sandbox personal buyer account.</p></div>
+          <div className="paypal-panel"><div id="paypal-buttons" /><p className="microcopy">Use a Sandbox buyer account.</p></div>
         </div>
         <div className="live-status" role={error ? "alert" : "status"} aria-live={error ? "assertive" : "polite"} aria-atomic="true">
           <span className={error ? "status-dot error-dot" : "status-dot"} />
@@ -452,7 +471,7 @@ export function App() {
             <span className="source-badge simulated">Simulated merchant fault</span>
           </div>
           {!config?.demoMode && <div className="callout warning"><strong>Demo controls are disabled.</strong><span>Set <code>DEMO_MODE=true</code> on the API server and restart it. Payment features remain available.</span></div>}
-          <p className="section-copy">This changes only the merchant-owned record. It never repeats Capture, creates a new PayPal order, or fabricates provider evidence.</p>
+          <p className="section-copy">Changes only the merchant record. No new PayPal order or Capture.</p>
           <div className="action-bar">
             <button className="primary-action" type="button" aria-describedby="action-guidance" title={scenario?.status === "ACTIVE" ? "Reset the active scenario before starting another." : undefined} disabled={!config?.demoMode || busy !== null || scenario?.status === "ACTIVE"} onClick={injectFault}>{busy === "inject" ? "Starting scenario…" : "Simulate merchant update failure"}</button>
             <button type="button" aria-describedby="action-guidance" title={remainingGraceSeconds > 0 ? `Available in ${remainingGraceSeconds}s` : undefined} disabled={reconciliationDisabled} onClick={reconcile}>{busy === "reconcile" ? "Checking…" : remainingGraceSeconds > 0 ? `Reconcile in ${remainingGraceSeconds}s` : "Run deterministic reconciliation"}</button>
