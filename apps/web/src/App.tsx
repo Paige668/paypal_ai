@@ -66,7 +66,8 @@ function EvidenceLinks({ ids }: { ids: string[] }) {
   if (!ids.length) return <span className="no-citation">No evidence reference required</span>;
   const reveal = (evidenceId: string) => {
     const element = document.getElementById(`evidence-${evidenceId}`);
-    element?.scrollIntoView({ behavior: "smooth", block: "center" });
+    const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+    element?.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "center" });
     element?.focus({ preventScroll: true });
     element?.classList.remove("evidence-highlight");
     window.requestAnimationFrame(() => element?.classList.add("evidence-highlight"));
@@ -458,10 +459,17 @@ export function App() {
             <button type="button" aria-describedby="action-guidance" title={!scenario ? "Start a scenario first." : undefined} disabled={!scenario || scenario.status !== "ACTIVE" || busy !== null} onClick={replayScenario}>{busy === "replay" ? "Replaying…" : "Replay locally"}</button>
             <button className="quiet-action" type="button" aria-describedby="action-guidance" title={!scenario ? "Start a scenario first." : undefined} disabled={!scenario || scenario.status !== "ACTIVE" || busy !== null} onClick={resetScenario}>{busy === "reset" ? "Resetting…" : "Reset merchant state"}</button>
           </div>
-          <p id="action-guidance" className="action-guidance" aria-live="polite"><strong>Next step:</strong> {actionHint}</p>
+          <p id="action-guidance" className="action-guidance"><strong>Next step:</strong> {actionHint}</p>
           <p className="grace-copy">Configured application grace period: <strong>{graceSeconds} seconds</strong>. This is not a PayPal SLA.</p>
           {scenario && <div className="scenario-record"><div><span>Scenario run</span><code>{scenario.scenarioRunId}</code></div><div><span>Status</span><strong>{scenario.status}</strong></div><div><span>Replay of</span><code>{scenario.replayOfScenarioRunId ?? "Original run"}</code></div></div>}
-          {reconciliation?.status === "GRACE_PERIOD" && <div className="callout neutral" role="status" aria-live="polite" aria-atomic="true"><strong>{remainingGraceSeconds > 0 ? `Ready to detect in ${remainingGraceSeconds}s` : "Ready to detect"}</strong><span>{remainingGraceSeconds > 0 ? `Eligible at ${formatTime(reconciliation.eligibleAt)}.` : "The grace period has elapsed. Run reconciliation now."}</span></div>}
+          {reconciliation?.status === "GRACE_PERIOD" && <>
+            <div className="callout neutral">
+              <strong aria-hidden="true">{remainingGraceSeconds > 0 ? `Ready to detect in ${remainingGraceSeconds}s` : "Ready to detect"}</strong>
+              <span aria-hidden="true">{remainingGraceSeconds > 0 ? `Eligible at ${formatTime(reconciliation.eligibleAt)}.` : "The grace period has elapsed. Run reconciliation now."}</span>
+              <span className="sr-only">Grace period {remainingGraceSeconds > 0 ? "active. Reconciliation will become available when it elapses." : "elapsed. Run reconciliation now."}</span>
+            </div>
+            {remainingGraceSeconds === 0 && <span className="sr-only" role="status">The grace period has elapsed. Deterministic reconciliation is ready.</span>}
+          </>}
           {incident && (
             <article className={`incident-card ${incident.status.toLowerCase()}`}>
               <div className="incident-icon" aria-hidden="true">!</div>

@@ -31,7 +31,7 @@ export function friendlyError(code: string): string {
 }
 
 export function amountValidationMessage(value: string): string | null {
-  if (!/^\d{1,7}\.\d{2}$/.test(value)) return "Enter a positive USD amount with exactly two decimal places.";
+  if (!/^\d{1,7}\.\d{2}$/.test(value)) return "Enter 0.01–9,999,999.99 USD with exactly two decimal places.";
   if (Number(value) <= 0) return "Amount must be greater than 0.00 USD.";
   return null;
 }
