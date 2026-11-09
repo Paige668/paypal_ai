@@ -390,6 +390,17 @@ describe("orders API", () => {
     expect(paypal.createOrder).toHaveBeenCalledTimes(createCallsBeforeReplay);
     expect(paypal.captureOrder).toHaveBeenCalledTimes(captureCallsBeforeReplay);
 
+    const replayScenarioRunId = replay.body.scenarioRunId as string;
+    now = new Date("2026-11-05T10:02:02.000Z");
+    const replayDetected = await request(app).post(`/api/demo/scenario-runs/${replayScenarioRunId}/reconcile`);
+    expect(replayDetected.body).toMatchObject({
+      status: "INCIDENT_OPEN",
+      incident: { type: "PAYMENT_CAPTURED_MERCHANT_PENDING" }
+    });
+    expect(replayDetected.body.incident.incidentId).not.toBe(detected.body.incident.incidentId);
+    expect(paypal.createOrder).toHaveBeenCalledTimes(createCallsBeforeReplay);
+    expect(paypal.captureOrder).toHaveBeenCalledTimes(captureCallsBeforeReplay);
+
     const reset = await request(app).post(`/api/demo/orders/${created.body.merchantOrderId}/reset`).send({});
     expect(reset.body).toMatchObject({ localStatus: "PAID", merchantUpdateFailureInjected: false, scenarioRunId: null });
     expect(paypal.createOrder).toHaveBeenCalledTimes(createCallsBeforeReplay);
