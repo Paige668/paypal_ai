@@ -65,6 +65,7 @@ export function buildEvidencePack(order: MerchantOrder, incident: PaymentInciden
     detectedAt: incident.detectedAt,
     externalCaptureStatus: order.paypalCaptureStatus ?? "UNKNOWN",
     merchantLocalStatusAtDetection: "PENDING_PAYMENT",
+    merchantSuccessfulLocalStatus: "PAID",
     currentMerchantLocalStatus: order.localStatus,
     evidence
   };
@@ -80,6 +81,17 @@ export function validateGroundedReport(value: unknown, pack: InvestigationEviden
   ];
   if (citations.some((evidenceId) => !knownEvidenceIds.has(evidenceId))) {
     throw new Error("UNKNOWN_EVIDENCE_ID");
+  }
+  const reportText = [
+    report.summary,
+    ...report.facts.map((item) => item.statement),
+    ...report.hypotheses.map((item) => item.statement),
+    ...report.unknowns,
+    ...report.nextSteps.flatMap((item) => [item.action, item.reason])
+  ].join("\n");
+  const merchantCompleted = /\b(?:merchant(?:-local|-side| local)?|local(?: payment)?)\b.{0,50}\b(?:state|status)\b\s*(?:=|:|is|was|to|as|be|become|becomes|became|set to)\s*["'`]?COMPLETED\b/i;
+  if (merchantCompleted.test(reportText)) {
+    throw new Error("STATE_BOUNDARY_CONFLATION");
   }
   const financialMutation = /\b(issue|initiate|retry|repeat|create|trigger)\b.{0,40}\b(refund|capture|charge|payment)\b|\b(mark|set|update)\b.{0,40}\b(paid|payment status|order status)\b/i;
   if (report.nextSteps.some((item) => financialMutation.test(item.action))) {

@@ -497,6 +497,35 @@ describe("orders API", () => {
     expect(JSON.stringify(response.body)).not.toContain("Fabricated fact");
   });
 
+  it("rejects AI output that conflates PayPal and merchant-local success states", async () => {
+    const investigator: AiInvestigator = {
+      model: "test-model",
+      investigate: vi.fn(async (pack) => ({
+        label: "AI-assisted analysis",
+        summary: "The provider and merchant states disagree.",
+        facts: pack.evidence.map((item) => ({ statement: `Observed ${item.factType}.`, evidenceIds: [item.evidenceId] })),
+        hypotheses: [{
+          statement: "The merchant-side update that sets the local payment status to 'COMPLETED' may have failed.",
+          confidence: "likely",
+          evidenceIds: []
+        }],
+        unknowns: [],
+        nextSteps: []
+      }))
+    };
+    const { app } = setup({ demoMode: true, graceMs: 0, investigator });
+    const scenarioRunId = await createDetectedScenario(app);
+
+    const response = await request(app).post(`/api/investigations/scenarios/${scenarioRunId}`).send({});
+
+    expect(response.body).toMatchObject({
+      status: "FALLBACK",
+      failureCode: "AI_OUTPUT_INVALID",
+      report: { label: "Rule-based fallback" }
+    });
+    expect(JSON.stringify(response.body)).not.toContain("local payment status to 'COMPLETED'");
+  });
+
   it("keeps deterministic findings available when the AI request fails", async () => {
     const investigator: AiInvestigator = {
       model: "test-model",

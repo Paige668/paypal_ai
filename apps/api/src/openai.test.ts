@@ -9,6 +9,7 @@ const pack: InvestigationEvidencePack = {
   detectedAt: "2026-11-06T10:00:00.000Z",
   externalCaptureStatus: "COMPLETED",
   merchantLocalStatusAtDetection: "PENDING_PAYMENT",
+  merchantSuccessfulLocalStatus: "PAID",
   currentMerchantLocalStatus: "PENDING_PAYMENT",
   evidence: [{
     evidenceId: "ev_capture",
@@ -49,6 +50,7 @@ describe("OpenAiInvestigator", () => {
       text: { format: { type: "json_schema", name: "paytrace_investigation", strict: true } }
     });
     expect(JSON.stringify(body.input)).toContain("ev_capture");
+    expect(JSON.stringify(body.input)).toContain("merchant-local success is PAID");
     expect(JSON.stringify(body)).not.toContain("PAYPAL_CLIENT_SECRET");
   });
 

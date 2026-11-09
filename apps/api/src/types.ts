@@ -68,6 +68,7 @@ export interface InvestigationEvidencePack {
   detectedAt: string;
   externalCaptureStatus: string;
   merchantLocalStatusAtDetection: "PENDING_PAYMENT";
+  merchantSuccessfulLocalStatus: "PAID";
   currentMerchantLocalStatus: MerchantLocalStatus;
   evidence: InvestigationEvidenceItem[];
 }

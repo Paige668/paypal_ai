@@ -96,6 +96,7 @@ export class OpenAiInvestigator implements AiInvestigator {
                 "Use only supplied evidence. Facts must cite existing evidence IDs.",
                 "Do not claim missing logs prove that PayPal did not send an event.",
                 "Do not recommend payment, capture, refund, or automatic status mutation.",
+                "Keep state models separate: PayPal capture success is COMPLETED; merchant-local success is PAID. Never describe merchant-local success as COMPLETED.",
                 "Separate facts, hypotheses, unknowns, and safe developer inspection steps."
               ].join(" ")
             }]
