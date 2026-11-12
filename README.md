@@ -98,10 +98,10 @@ For the complete local demonstration, use:
 DEMO_MODE=true
 RECONCILIATION_GRACE_MS=60000
 OPENAI_API_KEY=
-OPENAI_MODEL=gpt-5-mini
+OPENAI_MODEL=gpt-6.1-terra
 ```
 
-`gpt-5-mini` is the currently live-verified model and remains the repository default. The planned `gpt-6.1-terra` migration is a release gate and is documented under [Current verification status](#current-verification-status); reviewers can always select a compatible model with `OPENAI_MODEL`.
+`gpt-6.1-terra` is the live-verified repository default. Reviewers can select another compatible model available to their OpenAI project with `OPENAI_MODEL`.
 
 ### 2. Install and start
 
@@ -178,18 +178,13 @@ Automated tests use mocked providers and temporary databases, never real credent
 - On 2026-11-05, merchant-only injection, grace-period reconciliation, Incident idempotency, Replay, and Reset were exercised against retained genuine Capture evidence without another PayPal mutation.
 - On 2026-11-06, a live `gpt-5-mini` Responses API request produced an `AI_GENERATED` strict-schema report; every citation resolved, SQLite read-back matched, and order state remained unchanged.
 - On 2026-11-09, desktop and narrow-width browser acceptance covered refresh recovery, validation, countdown, keyboard focus, evidence navigation, live diagnosis, Replay, and final Reset.
-
-Detailed dated evidence is recorded in [DEVELOPMENT_STATUS.md](./DEVELOPMENT_STATUS.md).
+- On 2026-11-12, the default was migrated to `gpt-6.1-terra`. A live Responses API investigation returned `AI_GENERATED`; every citation resolved, SQLite read-back matched, and payment evidence plus merchant state remained unchanged.
 
 ## Current verification status
 
-The P0 product workflow is feature-frozen and manually accepted. The repository is **not yet marked submission-ready** because the final model migration gate remains open:
+The P0 product workflow is feature-frozen and manually accepted. The final model migration gate is complete: `gpt-6.1-terra` is the configurable default, the live end-to-end investigation passed, and all 35 automated tests, lint, production build, and whitespace validation pass.
 
-- Change the default model from the live-verified `gpt-5-mini` to `gpt-6.1-terra`, while keeping `OPENAI_MODEL` configurable.
-- Run one genuine end-to-end investigation with that model and verify strict output, citations, SQLite read-back, and zero payment or merchant-state mutation.
-- Re-run tests, lint, and build, then record dated evidence in `DEVELOPMENT_STATUS.md`.
-
-Deployment/access, public video, Devpost links, and the human-controlled submission are also intentionally not claimed as complete in this repository.
+The remaining release work is submission-only: record and publish the public demo video, add the video and Devpost links below, complete the final access/link rehearsal, and perform the human-controlled Devpost submission.
 
 ## API surface
 
@@ -226,9 +221,7 @@ Current limitations are intentional:
 ## Project links
 
 - Source: [github.com/Paige668/paypal_ai](https://github.com/Paige668/paypal_ai)
-- Implementation record: [DEVELOPMENT_STATUS.md](./DEVELOPMENT_STATUS.md)
-- Original V5 scope and plan: [PayTrace_2_0_V5_Complete_Package.md](./PayTrace_2_0_V5_Complete_Package.md)
-- Demo video: pending final release gate
+- Demo video: pending publication
 - Devpost entry: pending human-controlled submission
 
 ## License
