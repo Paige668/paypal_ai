@@ -1,174 +1,236 @@
 # PayTrace AI
 
-PayTrace is a developer-first PayPal Sandbox incident investigation lab. This repository currently implements the local development plan through **2026-11-06**: a React/Express TypeScript application, server-side PayPal OAuth, Orders v2 creation and capture, a transactional SQLite evidence timeline, a signature-gated PayPal Webhook inbox, deterministic merchant-side fault reconciliation, and evidence-grounded read-only AI investigation.
+> From a completed PayPal Sandbox capture and a pending merchant order to a reproducible, evidence-backed engineering investigation.
 
-This is not a production payment system. It uses Sandbox only. The Webhook listener and official PayPal postback verification flow are implemented, covered by automated tests, and verified with a genuine app-linked Sandbox Webhook delivery. Merchant-fault replay and reconciliation are implemented as local-only demo controls. AI explains an existing deterministic Incident; it does not determine payment truth or receive mutation tools.
+[![Node.js 20+](https://img.shields.io/badge/Node.js-20%2B-2f6f62)](https://nodejs.org/)
+[![PayPal Sandbox](https://img.shields.io/badge/PayPal-Sandbox-0070ba)](https://developer.paypal.com/home/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-173f45)](./LICENSE)
 
-## Current trust boundary
+PayTrace is a developer-first payment incident investigation lab. It correlates a genuine PayPal Sandbox Capture with merchant-owned order state, safely reproduces one merchant-side update failure, detects the mismatch with a deterministic rule, and generates a read-only AI investigation whose claims cite stored evidence.
 
-- PayPal Client Secret stays in the API process.
-- The browser receives only the public Sandbox Client ID.
-- The API stores only allowlisted order/capture fields in `data/paytrace.sqlite`; it does not store buyer data or raw PayPal payloads.
-- A capture can only be requested for a PayPal order already mapped to the internal merchant order.
-- `PayPal-Request-Id` is stable per merchant order for create and capture attempts.
-- PayPal external status and merchant-local status are separate fields supported by events with explicit provenance and verification status.
-- Webhook payloads cannot change payment state unless PayPal's official verification endpoint returns `SUCCESS`.
-- The Webhook inbox stores only allowlisted fields, deduplicates non-null provider event IDs, and quarantines unknown order mappings.
+The project is a local Sandbox prototype, not a production payment system or a general reconciliation platform. Rules determine whether an Incident exists; AI explains the evidence and never receives payment mutation tools.
 
-## API structure
+## What it demonstrates
 
-The API uses a small layered structure rather than a framework-specific MVC implementation:
+1. Create, approve, and Capture a real PayPal Sandbox order.
+2. Persist separate PayPal and merchant-local states in SQLite.
+3. Verify PayPal Webhooks through the official postback endpoint before accepting them as evidence.
+4. Intentionally keep the merchant order at `PENDING_PAYMENT` after a confirmed Capture.
+5. Open `PAYMENT_CAPTURED_MERCHANT_PENDING` only after an application-defined grace period.
+6. Generate a structured investigation with cited facts, ranked hypotheses, material unknowns, and safe inspection steps.
+7. Replay or reset the merchant-only scenario without another PayPal Create, Capture, refund, or Webhook-redelivery call.
 
-- `app.ts` composes dependencies, middleware, routes, and shared error handling.
-- `routes/` translates HTTP requests and responses without owning payment rules.
-- `services/` coordinates order and Webhook workflows against interfaces.
-- `paypal.ts` is the PayPal API adapter.
-- `order-store.ts` is the transactional SQLite repository.
-- `types.ts` defines the contracts between layers.
+## Real evidence vs. simulated fault
 
-Routes depend on services, services depend on gateway/repository interfaces, and infrastructure implementations remain replaceable in tests.
+This distinction is central to the project:
+
+| Evidence | Origin | Meaning |
+| --- | --- | --- |
+| Order and Capture response | **Real — PayPal Sandbox API** | Authenticated provider evidence from Orders v2 |
+| Verified Webhook | **Real — app-linked PayPal Sandbox delivery** | Accepted only after PayPal returns `SUCCESS` from signature verification |
+| Merchant order state | **Local merchant application** | PayTrace's own database state, independent of PayPal state |
+| Update failure, Replay, Reset | **Simulated — merchant-only demo control** | Reproduces the local integration bug; it does not simulate a PayPal outage or create another payment |
+| Investigation report | **AI-assisted or rule-based fallback** | Read-only explanation of an already deterministic Incident |
+
+The implemented incident is deliberately narrow: PayPal Capture status is `COMPLETED` while merchant-local status remains `PENDING_PAYMENT`. Merchant success is `PAID`, never `COMPLETED`.
+
+## Architecture
+
+```mermaid
+flowchart LR
+    Browser[React + TypeScript UI]
+    API[Express + TypeScript API]
+    PayPal[PayPal Sandbox<br/>Orders v2]
+    Verify[PayPal signature<br/>verification endpoint]
+    Rules[Deterministic<br/>reconciliation]
+    AI[OpenAI Responses API<br/>strict structured output]
+    DB[(SQLite<br/>orders · events · scenarios<br/>incidents · reports)]
+
+    Browser -->|Create / Capture / inspect| API
+    API -->|Server-side OAuth| PayPal
+    PayPal -->|Capture response| API
+    PayPal -->|App-linked Webhook| API
+    API -->|Complete original event + headers| Verify
+    Verify -->|SUCCESS only| DB
+    API <--> DB
+    DB --> Rules
+    Rules -->|Incident + minimized evidence pack| AI
+    AI -->|Validated citations and safe actions| DB
+```
+
+The API is separated into HTTP routes, workflow services, provider adapters, a transactional repository, and shared contracts. The browser receives only safe public configuration; PayPal and OpenAI secrets remain in the API process.
 
 ## Run locally
 
-Requirements: Node.js 20+ and a PayPal Developer Sandbox app with a Sandbox business account and buyer account.
+### Requirements
+
+- Node.js 20 or newer
+- A PayPal Developer **Sandbox** REST app
+- A Sandbox business account and personal buyer account associated with that environment
+- Optional: an OpenAI API key for AI-generated reports
+- Optional for genuine Webhook validation: a temporary or hosted public HTTPS URL
+
+### 1. Configure the environment
 
 ```bash
 cp .env.example .env
-# Fill PAYPAL_CLIENT_ID and PAYPAL_CLIENT_SECRET from the same Sandbox REST app.
-npm install
-npm run dev
 ```
 
-Open `http://localhost:5173`. Enter a Sandbox amount, choose **Pay with PayPal Sandbox**, and sign in with the Sandbox buyer account. A successful flow shows the internal merchant order ID, PayPal order ID, capture ID, status, amount/currency, and observation time.
+At minimum, set `PAYPAL_CLIENT_ID` and `PAYPAL_CLIENT_SECRET` from the same Sandbox REST app. Never use live PayPal credentials.
 
-The API listens on `http://localhost:3001` by default. Vite proxies `/api` during development.
+| Variable | Required | Purpose |
+| --- | --- | --- |
+| `PAYPAL_CLIENT_ID` | Yes | Public Sandbox app identifier; the browser receives this value |
+| `PAYPAL_CLIENT_SECRET` | Yes | Server-only Sandbox secret |
+| `PAYPAL_API_BASE_URL` | Default supplied | Must remain `https://api-m.sandbox.paypal.com` for this project |
+| `PAYPAL_WEBHOOK_ID` | For Webhooks | ID of the Webhook registered on the same Sandbox app |
+| `DATABASE_PATH` | Default supplied | SQLite database location |
+| `DEMO_MODE` | For fault demo | Set to `true` to expose local-only Simulate, Replay, and Reset controls |
+| `RECONCILIATION_GRACE_MS` | Default supplied | Application grace period; it is not a PayPal SLA |
+| `OPENAI_API_KEY` | Optional | Server-only key; absence produces an honest grounded fallback |
+| `OPENAI_MODEL` | Optional | Model override available to the OpenAI project |
+| `OPENAI_API_BASE_URL` | Default supplied | OpenAI API base URL |
+| `OPENAI_TIMEOUT_MS` | Default supplied | Bounded investigation timeout |
 
-On first start with an empty SQLite database, the API imports an existing allowlisted `data/orders.json` store if present. The legacy file remains local and ignored by git.
+For the complete local demonstration, use:
 
-## Commands
-
-```bash
-npm run dev
-npm run build
-npm test
-npm run lint
-```
-
-## Verified milestones
-
-1. `npm test` and `npm run build` pass.
-2. No `.env` file or secret is committed.
-3. `POST /api/orders` creates a genuine Sandbox order and returns an internal ↔ PayPal order mapping.
-4. Buyer approval happens in PayPal's Sandbox UI.
-5. `POST /api/orders/:merchantOrderId/capture` returns `COMPLETED` and the UI displays the real Sandbox capture ID.
-6. Restart the API and `GET /api/orders/:merchantOrderId` still returns the allowlisted record from `data/paytrace.sqlite`.
-
-The project owner completed steps 3–6 with a real Sandbox personal buyer on 2026-11-02. Automated tests continue to use a mocked provider and temporary local databases; credentials are never used in the test suite.
-
-## State, timeline, and Incident persistence
-
-- `merchant_orders` stores PayPal external status independently from merchant-local status.
-- `payment_events` records ordered, allowlisted evidence with source and verification status.
-- A partial unique index enforces deduplication for non-null PayPal provider event IDs received through the verified Webhook inbox.
-- `scenario_runs`, `incidents`, and `ai_reports` persist the merchant-only reproduction, deterministic mismatch finding, and evidence-grounded investigation separately from payment evidence.
-- A normal completed capture records external `COMPLETED` and a separate merchant transition to `PAID`.
-
-## November 3 Webhook inbox
-
-- `POST /api/webhooks/paypal` captures the raw JSON body before the normal JSON parser.
-- Required PayPal transmission headers and the registered `PAYPAL_WEBHOOK_ID` are sent to `/v1/notifications/verify-webhook-signature`.
-- Invalid signatures are rejected before persistence or state changes.
-- Verified events are inserted transactionally and acknowledged as `PROCESSED`, `DUPLICATE`, or `QUARANTINED`.
-- `PAYMENT.CAPTURE.COMPLETED` updates external capture evidence without deriving merchant-local status from the Webhook payload.
-- Raw payloads and buyer data are not stored.
-
-## November 5 merchant-fault reconciliation
-
-- Demo controls are denied by default and require `DEMO_MODE=true`.
-- `MERCHANT_UPDATE_FAILURE` deliberately keeps the merchant-local order at `PENDING_PAYMENT` while preserving the real Sandbox Capture evidence as `COMPLETED`.
-- `PAYMENT_CAPTURED_MERCHANT_PENDING` is opened only after the configurable application grace period; the grace period is not represented as a PayPal SLA.
-- Repeated reconciliation within one scenario returns the same Incident instead of duplicating it.
-- Replay creates a distinct `scenarioRunId`, references the preceding run, and performs no PayPal Create, Capture, Refund, or Webhook-redelivery call.
-- Reset resolves the local demo run and restores only the merchant-local status; immutable Capture evidence remains unchanged.
-
-The workflow was manually smoke-tested against retained evidence from a genuine completed Sandbox Capture. Injection produced the expected local mismatch, immediate reconciliation respected the test grace period, later reconciliation opened one evidence-linked Incident, Replay created a distinct run without adding PayPal API evidence, and Reset restored `PAID` while preserving the original Capture ID and `COMPLETED` status. No new PayPal order or Capture was triggered during this verification.
-
-To enable the local demo explicitly:
-
-```bash
+```dotenv
 DEMO_MODE=true
 RECONCILIATION_GRACE_MS=60000
-```
-
-The demo API flow is: create a scenario run for a merchant order, perform or reuse its completed Sandbox Capture, reconcile after the grace period, optionally replay, then reset.
-
-## November 6 evidence-grounded investigation
-
-- A minimized evidence pack contains the deterministic rule, incident state, provenance, verification status, timestamps, sanitized values, and resolvable evidence IDs. PayPal order/capture identifiers, secrets, raw payloads, and buyer data are excluded.
-- The OpenAI Responses API requests a strict JSON Schema through `text.format`, following the [official Structured Outputs guide](https://developers.openai.com/api/docs/guides/structured-outputs).
-- Zod validates the returned structure, then a separate citation checker rejects every unknown evidence ID.
-- Unsafe next steps that attempt a payment, Capture, refund, or automatic status mutation are rejected.
-- Valid reports are persisted in SQLite as `AI_GENERATED`; model failures, invalid output, and missing configuration persist an honest `FALLBACK` report without hiding the deterministic Incident.
-- Historical reports distinguish the merchant state at detection time from the current state after Reset.
-
-The complete path was live-verified on 2026-11-06 with a server-side OpenAI project key and `gpt-5-mini`: the Responses API returned an `AI_GENERATED` report, every cited evidence ID resolved to the minimized pack, the report was read back unchanged from SQLite, and the merchant order remained `COMPLETED | PAID` with demo fault injection disabled. The initial 15-second timeout proved too short for the first strict-schema request, so the bounded server timeout is 60 seconds.
-
-Configure the server-side model connection when available:
-
-```bash
 OPENAI_API_KEY=
 OPENAI_MODEL=gpt-5-mini
-OPENAI_API_BASE_URL=https://api.openai.com
-OPENAI_TIMEOUT_MS=60000
 ```
 
-The API key stays in the backend process and is never included in the browser configuration or evidence pack. Without a key, `POST /api/investigations/scenarios/:scenarioRunId` returns `failureCode: AI_NOT_CONFIGURED` with a cited rule-based fallback.
+`gpt-5-mini` is the currently live-verified model and remains the repository default. The planned `gpt-6.1-terra` migration is a release gate and is documented under [Current verification status](#current-verification-status); reviewers can always select a compatible model with `OPENAI_MODEL`.
 
-### Release-blocking OpenAI model check
+### 2. Install and start
 
-Before final acceptance or recording the submission demo:
+```bash
+npm ci
+npm run dev
+```
 
-- Change the project's default model from the currently verified `gpt-5-mini` to `gpt-6.1-terra` while retaining `OPENAI_MODEL` as an environment-variable override.
-- Run one genuine end-to-end OpenAI check covering incident creation, evidence-grounded investigation, citation validation, SQLite report read-back, and confirmation that no payment or merchant-state mutation occurred.
-- Run the full automated test, lint, and production-build checks, then record the selected model and verification result in `DEVELOPMENT_STATUS.md`.
+Open <http://localhost:5173>. The API listens on <http://localhost:3001> by default, and Vite proxies `/api` during development.
 
-This is a release-blocking checklist item, not a requirement for day-to-day development. Do not record the final demo or mark the project submission-ready until it is complete.
+On first start with an empty database, the API imports an existing allowlisted `data/orders.json` store if present. Local environment files, SQLite files, and the legacy store are ignored by Git.
 
-## November 7 single-purpose investigation UI
+### 3. Optional genuine Webhook setup
 
-The React application now presents the complete workflow on one responsive screen:
+1. Expose port `3001` through a public HTTPS URL.
+2. In the PayPal Developer Dashboard, register `<public-url>/api/webhooks/paypal` on the same Sandbox REST app.
+3. Subscribe to `PAYMENT.CAPTURE.COMPLETED` and copy the registered Webhook ID into `PAYPAL_WEBHOOK_ID`.
+4. Restart the API before creating and capturing the Sandbox order.
 
-1. Complete a genuine PayPal Sandbox checkout and confirm the normal `COMPLETED | PAID` path.
-2. Start the explicitly labeled simulated merchant-update failure; provider evidence remains unchanged.
-3. Run deterministic reconciliation after the displayed application grace period.
-4. Inspect the Incident and its linked Capture and merchant-fault evidence IDs.
-5. Generate the persisted evidence-grounded AI report, or the honest rule-based fallback when AI is unavailable.
-6. Replay the merchant-only scenario with a new scenario ID or reset merchant state without making another PayPal call.
+PayPal Webhooks Simulator events do not count as app-linked payment evidence and may not support the same postback verification path. PayTrace fails closed when the signature is invalid or the registered Webhook ID is absent.
 
-The UI visually distinguishes `Sandbox PayPal API`, `Verified PayPal Webhook`, `Merchant`, and `Simulated merchant fault` provenance. Report citations navigate to the referenced timeline event, while facts, hypotheses, unknowns, and safe next steps remain separate. Empty, loading, disabled-demo, grace-period, fallback, and request-error states are represented without hiding the deterministic evidence.
+## Demo walkthrough
 
-Implementation verification includes 24 API tests, 3 focused web presentation tests, TypeScript lint checks, and a production build. Final browser walkthrough with the project owner's Sandbox buyer remains a manual acceptance item and must not be marked complete from automated checks alone.
+1. Enter a valid amount such as `10.00 USD` and choose **Pay with PayPal Sandbox**.
+2. Approve with the Sandbox personal buyer. Confirm the normal state is PayPal `COMPLETED`, merchant `PAID`, with a non-empty Capture ID.
+3. Choose **Simulate merchant update failure**. Only merchant state changes to `PENDING_PAYMENT`; the original Capture evidence remains unchanged.
+4. Wait for the displayed application grace period and run reconciliation.
+5. Inspect the deterministic Incident and follow its Capture and simulated-fault evidence links.
+6. Generate the investigation. With no key or with invalid provider output, PayTrace persists a cited `FALLBACK` report instead of hiding the Incident.
+7. Use **Replay** to create a distinct local scenario, or **Reset** to resolve the Incident and restore merchant state to `PAID`.
+8. Confirm the PayPal order ID, Capture ID, external `COMPLETED` status, and count of PayPal API evidence did not change during Replay or Reset.
 
-A genuine `PAYMENT.CAPTURE.COMPLETED` delivery from the same Sandbox REST app was verified on 2026-11-04 through a temporary public HTTPS tunnel. The event passed PayPal's official postback signature verification, was recorded once with `PAYPAL_WEBHOOK` provenance and `VERIFIED_WEBHOOK` status, remained deduplicated after redelivery, and persisted across an API restart. The temporary tunnel was stopped after validation. PayPal Webhooks Simulator events do not support postback verification and do not count as app-linked Sandbox evidence.
+Refresh recovery stores only the internal merchant order ID in the browser and restores the Order, timeline, active Scenario, Incident, and persisted investigation through read-only APIs.
 
-## API surface implemented so far
+## Trust, evidence, and safety model
 
-- `GET /api/health`
-- `GET /api/config/paypal`
-- `POST /api/orders`
-- `GET /api/orders/:merchantOrderId`
-- `GET /api/orders/:merchantOrderId/timeline`
-- `POST /api/orders/:merchantOrderId/capture`
-- `POST /api/webhooks/paypal`
-- `POST /api/demo/scenario-runs`
-- `GET /api/demo/scenario-runs/:scenarioRunId`
-- `POST /api/demo/scenario-runs/:scenarioRunId/reconcile`
-- `POST /api/demo/scenario-runs/:scenarioRunId/replay`
-- `POST /api/demo/orders/:merchantOrderId/reset`
-- `POST /api/investigations/scenarios/:scenarioRunId`
-- `GET /api/investigations/scenarios/:scenarioRunId`
+- PayPal Client Secret and OpenAI API key stay in the backend process.
+- The repository stores allowlisted fields only—no raw PayPal payloads, buyer data, OAuth tokens, or secrets.
+- A Capture request is accepted only for a PayPal order already mapped to the internal merchant order.
+- `PayPal-Request-Id` remains stable per merchant order for Create and Capture attempts.
+- PayPal external state and merchant-local state are independent fields with timestamped provenance.
+- Webhook payloads cannot change payment evidence until official signature verification succeeds.
+- Non-null provider event IDs are unique; duplicate verified delivery is a transactional no-op.
+- Unknown order mappings are quarantined instead of being treated as payment truth.
+- The AI receives a minimized evidence pack without PayPal order/Capture identifiers or buyer data.
+- Strict JSON Schema, Zod validation, evidence-ID validation, state-boundary checks, and financial-action checks gate every AI report.
+- AI has no PayPal credentials or mutation tools. Invalid, unavailable, or unconfigured AI degrades to a transparent rule-based fallback.
+
+## Verification
+
+Run the same checks used for the current working tree:
+
+```bash
+npm test
+npm run lint
+npm run build
+git diff --check
+```
+
+Verified on 2026-11-12:
+
+| Area | Coverage | Result |
+| --- | --- | --- |
+| API and repository | Create/Capture mapping, idempotent Capture, amount rejection, Webhook verification/deduplication/quarantine, state separation, persistence, Replay/Reset, reconciliation, strict AI output, correction attempt, unsafe output and fallback paths | 27 tests passed |
+| Web presentation | Provenance labels, workflow stages, disabled-demo messaging, input validation, countdown/next action, safe workspace persistence | 8 tests passed |
+| Static and production checks | TypeScript lint, Vite/API production build, whitespace validation | Passed |
+
+Automated tests use mocked providers and temporary databases, never real credentials.
+
+### External verification already completed
+
+- On 2026-11-02, a genuine `10.00 USD` Sandbox buyer flow returned a real non-empty Capture ID and `COMPLETED` status.
+- On 2026-11-04, a genuine `PAYMENT.CAPTURE.COMPLETED` event from the same Sandbox app passed PayPal's official postback verification, remained deduplicated after redelivery, and survived restart.
+- On 2026-11-05, merchant-only injection, grace-period reconciliation, Incident idempotency, Replay, and Reset were exercised against retained genuine Capture evidence without another PayPal mutation.
+- On 2026-11-06, a live `gpt-5-mini` Responses API request produced an `AI_GENERATED` strict-schema report; every citation resolved, SQLite read-back matched, and order state remained unchanged.
+- On 2026-11-09, desktop and narrow-width browser acceptance covered refresh recovery, validation, countdown, keyboard focus, evidence navigation, live diagnosis, Replay, and final Reset.
+
+Detailed dated evidence is recorded in [DEVELOPMENT_STATUS.md](./DEVELOPMENT_STATUS.md).
+
+## Current verification status
+
+The P0 product workflow is feature-frozen and manually accepted. The repository is **not yet marked submission-ready** because the final model migration gate remains open:
+
+- Change the default model from the live-verified `gpt-5-mini` to `gpt-6.1-terra`, while keeping `OPENAI_MODEL` configurable.
+- Run one genuine end-to-end investigation with that model and verify strict output, citations, SQLite read-back, and zero payment or merchant-state mutation.
+- Re-run tests, lint, and build, then record dated evidence in `DEVELOPMENT_STATUS.md`.
+
+Deployment/access, public video, Devpost links, and the human-controlled submission are also intentionally not claimed as complete in this repository.
+
+## API surface
+
+| Method | Route | Purpose |
+| --- | --- | --- |
+| `GET` | `/api/health` | Health check |
+| `GET` | `/api/config/paypal` | Safe public Sandbox and demo configuration |
+| `POST` | `/api/orders` | Create internal and PayPal Sandbox orders |
+| `GET` | `/api/orders/:merchantOrderId` | Read allowlisted order state |
+| `GET` | `/api/orders/:merchantOrderId/timeline` | Read ordered evidence |
+| `POST` | `/api/orders/:merchantOrderId/capture` | Capture an approved mapped order |
+| `POST` | `/api/webhooks/paypal` | Verify and ingest a PayPal Webhook |
+| `POST` | `/api/demo/scenario-runs` | Inject the merchant-only demo fault |
+| `GET` | `/api/demo/scenario-runs/:scenarioRunId` | Read Scenario and Incident state |
+| `POST` | `/api/demo/scenario-runs/:scenarioRunId/reconcile` | Evaluate the deterministic rule |
+| `POST` | `/api/demo/scenario-runs/:scenarioRunId/replay` | Create a distinct local Replay |
+| `POST` | `/api/demo/orders/:merchantOrderId/reset` | Resolve local demo state and restore `PAID` |
+| `POST` | `/api/investigations/scenarios/:scenarioRunId` | Generate and persist an investigation |
+| `GET` | `/api/investigations/scenarios/:scenarioRunId` | Read the persisted investigation |
+
+## Positioning and limitations
+
+Payment providers and observability platforms already offer Webhook logs, replay, reconciliation, and anomaly monitoring. PayTrace explores a narrower developer workflow: correlate an actual PayPal Sandbox Capture with merchant-owned state, recreate a controlled merchant-side failure, and turn the Incident into a traceable AI-assisted debugging report. Its value is the focused, testable end-to-end workflow—not a claim that payment anomalies or AI reconciliation were invented here.
+
+Current limitations are intentional:
+
+- Sandbox only; no live money, refunds, chargebacks, or payment retries.
+- One merchant-owned incident type, not general payment monitoring or settlement reconciliation.
+- Local SQLite and a single application instance; no multi-tenant or distributed-processing guarantees.
+- No authentication, production deployment, or shared judge credentials.
+- No proof of production scale, commercial demand, or exclusive market novelty.
+- Additional fault types, generalized dashboards, multi-PSP support, and Incident-to-Test export remain deferred.
+
+## Project links
+
+- Source: [github.com/Paige668/paypal_ai](https://github.com/Paige668/paypal_ai)
+- Implementation record: [DEVELOPMENT_STATUS.md](./DEVELOPMENT_STATUS.md)
+- Original V5 scope and plan: [PayTrace_2_0_V5_Complete_Package.md](./PayTrace_2_0_V5_Complete_Package.md)
+- Demo video: pending final release gate
+- Devpost entry: pending human-controlled submission
 
 ## License
 
 MIT. See [LICENSE](./LICENSE).
-

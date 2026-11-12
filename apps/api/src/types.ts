@@ -151,7 +151,7 @@ export interface PayPalGateway {
 
 export interface AiInvestigator {
   readonly model: string;
-  investigate(evidencePack: InvestigationEvidencePack): Promise<unknown>;
+  investigate(evidencePack: InvestigationEvidencePack, correction?: string): Promise<unknown>;
 }
 
 export interface OrderRepository {

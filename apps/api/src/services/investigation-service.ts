@@ -10,25 +10,25 @@ import type {
 } from "../types.js";
 
 const citedStatementSchema = z.object({
-  statement: z.string().min(1).max(500),
+  statement: z.string().min(1).max(220),
   evidenceIds: z.array(z.string().startsWith("ev_")).min(1)
 }).strict();
 
 export const investigationReportSchema = z.object({
   label: z.literal("AI-assisted analysis"),
-  summary: z.string().min(1).max(1_000),
-  facts: z.array(citedStatementSchema).max(10),
+  summary: z.string().min(1).max(260),
+  facts: z.array(citedStatementSchema).max(3),
   hypotheses: z.array(z.object({
-    statement: z.string().min(1).max(500),
+    statement: z.string().min(1).max(220),
     confidence: z.enum(["possible", "likely"]),
     evidenceIds: z.array(z.string().startsWith("ev_")).max(10)
-  }).strict()).max(10),
-  unknowns: z.array(z.string().min(1).max(500)).max(10),
+  }).strict()).max(3),
+  unknowns: z.array(z.string().min(1).max(220)).max(3),
   nextSteps: z.array(z.object({
-    action: z.string().min(1).max(500),
-    reason: z.string().min(1).max(500),
+    action: z.string().min(1).max(180),
+    reason: z.string().min(1).max(220),
     evidenceIds: z.array(z.string().startsWith("ev_")).max(10)
-  }).strict()).max(10)
+  }).strict()).max(3)
 }).strict();
 
 const safeSummaryKeys = new Set([
@@ -93,7 +93,7 @@ export function validateGroundedReport(value: unknown, pack: InvestigationEviden
   if (merchantCompleted.test(reportText)) {
     throw new Error("STATE_BOUNDARY_CONFLATION");
   }
-  const financialMutation = /\b(issue|initiate|retry|repeat|create|trigger)\b.{0,40}\b(refund|capture|charge|payment)\b|\b(mark|set|update)\b.{0,40}\b(paid|payment status|order status)\b/i;
+  const financialMutation = /^\s*(?:(?:manually|automatically|directly)\s+)?(?:(?:issue|initiate|retry|repeat|create|trigger)\b.{0,40}\b(?:refund|capture|charge|payment)\b|(?:mark|set|update)\b.{0,40}\b(?:paid|payment status|order status)\b)/i;
   if (report.nextSteps.some((item) => financialMutation.test(item.action))) {
     throw new Error("UNSAFE_NEXT_STEP");
   }
@@ -131,6 +131,12 @@ export class InvestigationServiceError extends Error {
   }
 }
 
+function validationFailureMessage(cause: unknown): string {
+  return cause instanceof z.ZodError
+    ? cause.issues.map((issue) => `${issue.path.join(".") || "report"}: ${issue.message}`).join("; ")
+    : cause instanceof Error ? cause.message : "UNKNOWN_VALIDATION_FAILURE";
+}
+
 export class InvestigationService {
   constructor(
     private readonly orders: OrderRepository,
@@ -155,10 +161,18 @@ export class InvestigationService {
         let report: InvestigationReport;
         try {
           report = validateGroundedReport(raw, pack);
-        } catch {
-          investigation = this.fallback(run.incident.incidentId, pack, "AI_OUTPUT_INVALID");
-          await this.orders.saveInvestigation(investigation);
-          return investigation;
+        } catch (firstCause) {
+          const firstFailure = validationFailureMessage(firstCause);
+          console.warn("AI investigation output rejected; requesting one correction:", firstFailure);
+          try {
+            const correctedRaw = await this.investigator.investigate(pack, firstFailure);
+            report = validateGroundedReport(correctedRaw, pack);
+          } catch (secondCause) {
+            console.warn("Corrected AI investigation output rejected:", validationFailureMessage(secondCause));
+            investigation = this.fallback(run.incident.incidentId, pack, "AI_OUTPUT_INVALID");
+            await this.orders.saveInvestigation(investigation);
+            return investigation;
+          }
         }
         investigation = {
           incidentId: run.incident.incidentId,

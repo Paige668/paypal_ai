@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createApp } from "./app.js";
 import type {
   AiInvestigator,
+  InvestigationEvidencePack,
   MerchantOrder,
   OrderRepository,
   OrderTimeline,
@@ -470,6 +471,66 @@ describe("orders API", () => {
     const sentPack = vi.mocked(investigator.investigate).mock.calls[0]![0];
     expect(JSON.stringify(sentPack)).not.toContain("paypalOrderId");
     expect(JSON.stringify(sentPack)).not.toContain("captureId");
+  });
+
+  it("requests one correction for invalid output and accepts read-only inspection wording", async () => {
+    const investigator: AiInvestigator = {
+      model: "test-model",
+      investigate: vi.fn()
+        .mockResolvedValueOnce({
+          label: "AI-assisted analysis",
+          summary: "Unsupported first attempt.",
+          facts: [{ statement: "Fabricated fact.", evidenceIds: ["ev_does_not_exist"] }],
+          hypotheses: [],
+          unknowns: [],
+          nextSteps: []
+        })
+        .mockImplementationOnce(async (pack: InvestigationEvidencePack) => ({
+          label: "AI-assisted analysis",
+          summary: "The external capture succeeded but the merchant-local transition did not.",
+          facts: pack.evidence.map((item) => ({ statement: `Observed ${item.factType}.`, evidenceIds: [item.evidenceId] })),
+          hypotheses: [],
+          unknowns: [],
+          nextSteps: [{
+            action: "Inspect why the handler failed to update the order status to PAID.",
+            reason: "This is a read-only check of the merchant-owned transition.",
+            evidenceIds: []
+          }]
+        }))
+    };
+    const { app } = setup({ demoMode: true, graceMs: 0, investigator });
+    const scenarioRunId = await createDetectedScenario(app);
+
+    const response = await request(app).post(`/api/investigations/scenarios/${scenarioRunId}`).send({});
+
+    expect(response.body).toMatchObject({ status: "AI_GENERATED", failureCode: null });
+    expect(investigator.investigate).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(investigator.investigate).mock.calls[1]![1]).toContain("UNKNOWN_EVIDENCE_ID");
+  });
+
+  it("still rejects a direct merchant payment-state mutation", async () => {
+    const investigator: AiInvestigator = {
+      model: "test-model",
+      investigate: vi.fn(async (pack) => ({
+        label: "AI-assisted analysis",
+        summary: "The external and merchant-local states disagree.",
+        facts: pack.evidence.map((item) => ({ statement: `Observed ${item.factType}.`, evidenceIds: [item.evidenceId] })),
+        hypotheses: [],
+        unknowns: [],
+        nextSteps: [{
+          action: "Update the order status to PAID.",
+          reason: "Unsafe mutation.",
+          evidenceIds: []
+        }]
+      }))
+    };
+    const { app } = setup({ demoMode: true, graceMs: 0, investigator });
+    const scenarioRunId = await createDetectedScenario(app);
+
+    const response = await request(app).post(`/api/investigations/scenarios/${scenarioRunId}`).send({});
+
+    expect(response.body).toMatchObject({ status: "FALLBACK", failureCode: "AI_OUTPUT_INVALID" });
+    expect(investigator.investigate).toHaveBeenCalledTimes(2);
   });
 
   it("rejects fabricated evidence citations and stores a grounded fallback", async () => {

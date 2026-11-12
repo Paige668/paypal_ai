@@ -77,7 +77,7 @@ function EvidenceLinks({ ids }: { ids: string[] }) {
   };
   return (
     <span className="evidence-links" aria-label="Evidence references">
-      {ids.map((id) => <button type="button" className="evidence-link" key={id} onClick={() => reveal(id)}>{id}</button>)}
+      {ids.map((id, index) => <button type="button" className="evidence-link" key={id} title={id} aria-label={`Open evidence ${id}`} onClick={() => reveal(id)}>Evidence {String(index + 1).padStart(2, "0")}</button>)}
     </span>
   );
 }
@@ -122,12 +122,24 @@ function TimelineEvent({ event, index }: { event: PaymentEvent; index: number })
 
 function InvestigationPanel({ investigation }: { investigation: Investigation }) {
   const isAi = investigation.status === "AI_GENERATED";
+  const primaryHypothesis = investigation.report.hypotheses.find((item) => item.confidence === "likely")
+    ?? investigation.report.hypotheses[0];
+  const diagnosis = primaryHypothesis?.statement ?? investigation.report.summary;
+  const diagnosisEvidence = primaryHypothesis?.evidenceIds ?? investigation.report.facts.flatMap((item) => item.evidenceIds);
+  const confidence = primaryHypothesis?.confidence === "likely"
+    ? "High confidence"
+    : primaryHypothesis?.confidence === "possible" ? "Moderate confidence" : "Evidence-confirmed mismatch";
+  const primaryAction = investigation.report.nextSteps[0];
+  const reasoningFacts = investigation.report.facts.slice(0, 3);
+  const materialUnknowns = investigation.report.unknowns.slice(0, 3);
+  const secondaryActions = investigation.report.nextSteps.slice(1, 3);
+  const alternativeHypotheses = investigation.report.hypotheses.filter((item) => item !== primaryHypothesis).slice(0, 2);
   return (
-    <section className="report-section" aria-labelledby="report-heading">
+    <section id="investigation-report" className="report-section" aria-labelledby="report-heading" tabIndex={-1}>
       <div className="section-heading">
         <div>
           <p className="section-kicker">04 · Investigate</p>
-          <h2 id="report-heading">Evidence-grounded report</h2>
+          <h2 id="report-heading">Incident decision brief</h2>
         </div>
         <span className={`source-badge ${isAi ? "ai" : "fallback"}`}>{investigation.report.label}</span>
       </div>
@@ -136,43 +148,72 @@ function InvestigationPanel({ investigation }: { investigation: Investigation })
         <span>{formatTime(investigation.generatedAt)}</span>
         {investigation.failureCode && <span>{investigation.failureCode.replaceAll("_", " ")}</span>}
       </div>
-      <p className="report-summary">{investigation.report.summary}</p>
-      <div className="report-grid">
-        <article className="report-column facts">
-          <h3>Confirmed facts</h3>
-          {investigation.report.facts.length ? investigation.report.facts.map((item, index) => (
-            <div className="report-item" key={`${item.statement}-${index}`}>
-              <p>{item.statement}</p><EvidenceLinks ids={item.evidenceIds} />
-            </div>
-          )) : <p className="empty-copy">No confirmed facts were returned.</p>}
+      <article className="diagnosis-card">
+        <div className="diagnosis-label-row">
+          <span className="diagnosis-label">Primary diagnosis</span>
+          <span className="diagnosis-confidence"><i aria-hidden="true" />{confidence}</span>
+        </div>
+        <h3>{diagnosis}</h3>
+        {diagnosis !== investigation.report.summary && <p>{investigation.report.summary}</p>}
+        <EvidenceLinks ids={[...new Set(diagnosisEvidence)]} />
+      </article>
+
+      <div className="decision-grid">
+        <article className="reasoning-panel">
+          <p className="decision-kicker">Why this is the leading diagnosis</p>
+          <ol className="reasoning-chain">
+            {reasoningFacts.length ? reasoningFacts.map((item, index) => (
+              <li key={`${item.statement}-${index}`}>
+                <span>{String(index + 1).padStart(2, "0")}</span>
+                <div><p>{item.statement}</p><EvidenceLinks ids={item.evidenceIds} /></div>
+              </li>
+            )) : <li className="empty-copy">No confirmed facts were returned.</li>}
+          </ol>
         </article>
-        <article className="report-column hypotheses">
-          <h3>Hypotheses, not facts</h3>
-          {investigation.report.hypotheses.length ? investigation.report.hypotheses.map((item, index) => (
-            <div className="report-item" key={`${item.statement}-${index}`}>
-              <span className="confidence">{item.confidence}</span><p>{item.statement}</p><EvidenceLinks ids={item.evidenceIds} />
-            </div>
-          )) : <p className="empty-copy">No evidence-supported hypothesis was returned.</p>}
+
+        <article className="action-panel">
+          <div className="action-priority">Do this first</div>
+          {primaryAction ? <>
+            <h3>{primaryAction.action}</h3>
+            <p>{primaryAction.reason}</p>
+            <EvidenceLinks ids={primaryAction.evidenceIds} />
+          </> : <p className="empty-copy">No safe inspection step was returned.</p>}
         </article>
-        <details className="report-column report-disclosure unknowns">
-          <summary><span>Unknowns</span><span>{investigation.report.unknowns.length}</span></summary>
-          <div className="report-disclosure-content">
-            {investigation.report.unknowns.length
-              ? <ul>{investigation.report.unknowns.map((item) => <li key={item}>{item}</li>)}</ul>
-              : <p className="empty-copy">No unknowns were listed.</p>}
-          </div>
-        </details>
-        <details className="report-column report-disclosure next-steps">
-          <summary><span>Safe inspection steps</span><span>{investigation.report.nextSteps.length}</span></summary>
-          <div className="report-disclosure-content">
-            {investigation.report.nextSteps.length ? investigation.report.nextSteps.map((item, index) => (
+      </div>
+
+      <details className="judgment-boundary">
+        <summary><span>What could change this judgment?</span><span>{materialUnknowns.length}</span></summary>
+        <div className="judgment-boundary-content">
+          {materialUnknowns.length
+            ? <ul>{materialUnknowns.map((item) => <li key={item}>{item}</li>)}</ul>
+            : <p className="empty-copy">No material evidence gap was identified.</p>}
+        </div>
+      </details>
+
+      <details className="evidence-vault">
+        <summary>
+          <span><b>Explore the full analysis</b><small>Alternatives, additional actions, and cited evidence</small></span>
+          <span>{alternativeHypotheses.length + secondaryActions.length} items</span>
+        </summary>
+        <div className="evidence-vault-grid">
+          <article>
+            <h3>Alternative explanations</h3>
+            {alternativeHypotheses.length ? alternativeHypotheses.map((item, index) => (
+              <div className="report-item" key={`${item.statement}-${index}`}>
+                <span className="confidence">{item.confidence}</span><p>{item.statement}</p><EvidenceLinks ids={item.evidenceIds} />
+              </div>
+            )) : <p className="empty-copy">No competing evidence-supported explanation was returned.</p>}
+          </article>
+          <article>
+            <h3>Additional safe checks</h3>
+            {secondaryActions.length ? secondaryActions.map((item, index) => (
               <div className="report-item" key={`${item.action}-${index}`}>
                 <p><strong>{item.action}</strong></p><p className="reason">{item.reason}</p><EvidenceLinks ids={item.evidenceIds} />
               </div>
-            )) : <p className="empty-copy">No next steps were returned.</p>}
-          </div>
-        </details>
-      </div>
+            )) : <p className="empty-copy">The primary action is the only recommended check.</p>}
+          </article>
+        </div>
+      </details>
       <p className="safety-note">Read-only analysis · No capture, refund, charge, or merchant-state tool is available to the model.</p>
     </section>
   );
@@ -197,6 +238,7 @@ export function App() {
   const orderRef = useRef<Order | null>(null);
   const checkoutValidationRef = useRef<string | null>(null);
   const restoreAttemptedRef = useRef(false);
+  const revealInvestigationRef = useRef(false);
   amountRef.current = amount;
   orderRef.current = order;
 
@@ -257,6 +299,20 @@ export function App() {
     return () => window.clearInterval(timer);
   }, [eligibleAt]);
 
+  const viewInvestigation = () => {
+    const element = document.getElementById("investigation-report");
+    if (!element) return;
+    const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+    element.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "start" });
+    element.focus({ preventScroll: true });
+  };
+
+  useEffect(() => {
+    if (!investigation || !revealInvestigationRef.current) return;
+    revealInvestigationRef.current = false;
+    window.requestAnimationFrame(viewInvestigation);
+  }, [investigation]);
+
   useEffect(() => {
     let cancelled = false;
     let buttons: { render(selector: string): Promise<void>; close(): Promise<void> } | undefined;
@@ -285,6 +341,11 @@ export function App() {
                 const restoredScenario = await api<Scenario>(`/api/demo/scenario-runs/${encodeURIComponent(restoredOrder.scenarioRunId)}`);
                 if (cancelled) return;
                 setScenario(restoredScenario);
+                if (restoredScenario.incident) {
+                  const restoredInvestigation = await api<Investigation | null>(`/api/investigations/scenarios/${encodeURIComponent(restoredScenario.scenarioRunId)}`);
+                  if (cancelled) return;
+                  setInvestigation(restoredInvestigation);
+                }
               }
               restored = true;
             } catch (cause) {
@@ -387,6 +448,7 @@ export function App() {
 
   const generateInvestigation = () => scenario && runAction("investigate", async () => {
     const report = await api<Investigation>(`/api/investigations/scenarios/${encodeURIComponent(scenario.scenarioRunId)}`, { method: "POST", body: "{}" });
+    revealInvestigationRef.current = true;
     setInvestigation(report);
     setStatus(report.status === "AI_GENERATED" ? "Evidence-grounded AI report generated and persisted." : "AI was unavailable or invalid; a grounded rule-based report was persisted.");
   });
@@ -415,9 +477,9 @@ export function App() {
           <div className="environment"><i /> Sandbox lab</div>
         </nav>
         <div id="top" className="hero-copy">
-          <p className="eyebrow">Payment incident investigation · Read-only by design</p>
-          <h1>Follow the evidence.<br /><em>Keep payment truth separate.</em></h1>
-          <p className="lede">Prove one real Sandbox capture, reproduce a merchant-owned state failure, detect it with a deterministic rule, then ask AI to explain only the evidence that exists.</p>
+          <p className="eyebrow">Payment incident diagnosis</p>
+          <h1>Find the break.<br /><em>Act on the evidence.</em></h1>
+          <p className="lede">Trace a Sandbox payment from capture to merchant state. Turn the mismatch into a clear diagnosis.</p>
         </div>
         <ol className="progress" aria-label={`Workflow stage ${stage} of 4`}>
           {progress.map((item) => <li className={item.done ? "done" : stage === item.number ? "current" : ""} key={item.number}><span>{item.done ? "✓" : item.number}</span><b>{item.label}</b></li>)}
@@ -493,19 +555,24 @@ export function App() {
             <article className={`incident-card ${incident.status.toLowerCase()}`}>
               <div className="incident-icon" aria-hidden="true">!</div>
               <div><p>Deterministic incident · {incident.status}</p><h3>Capture completed, merchant order pending</h3><span>{incident.reconciliationVersion} · detected {formatTime(incident.detectedAt)}</span><EvidenceLinks ids={[incident.captureEvidenceId, incident.merchantStatusEvidenceId]} /></div>
-              <button className="primary-action" type="button" aria-describedby="action-guidance" disabled={incident.status !== "OPEN" || busy !== null} onClick={generateInvestigation}>{busy === "investigate" ? "Investigating…" : investigation ? "Regenerate report" : "Generate investigation"}</button>
+              <div className="incident-actions">
+                {investigation ? <>
+                  <button className="primary-action" type="button" disabled={busy !== null} onClick={viewInvestigation}>View diagnosis</button>
+                  <button className="secondary-action" type="button" aria-describedby="action-guidance" disabled={incident.status !== "OPEN" || busy !== null} onClick={generateInvestigation}>{busy === "investigate" ? "Regenerating…" : "Regenerate"}</button>
+                </> : <button className="primary-action" type="button" aria-describedby="action-guidance" disabled={incident.status !== "OPEN" || busy !== null} onClick={generateInvestigation}>{busy === "investigate" ? "Investigating…" : "Generate investigation"}</button>}
+              </div>
             </article>
           )}
         </section>
       )}
 
+      {investigation && <InvestigationPanel investigation={investigation} />}
       {timeline && (
         <section className="timeline-section" aria-labelledby="timeline-heading">
           <div className="section-heading"><div><p className="section-kicker">Evidence timeline</p><h2 id="timeline-heading">Every claim keeps its source</h2></div><span className="event-count">{timeline.events.length} events</span></div>
           {timeline.events.length ? <ol className="timeline-list">{timeline.events.map((event, index) => <TimelineEvent event={event} index={index} key={event.evidenceId} />)}</ol> : <p className="empty-copy">No evidence has been recorded for this order.</p>}
         </section>
       )}
-      {investigation && <InvestigationPanel investigation={investigation} />}
       <footer><div><strong>PayTrace</strong><span>Developer investigation lab</span></div><p>Sandbox only · No refunds · No automatic financial remediation · Buyer data excluded</p></footer>
     </main>
   );
